@@ -1,0 +1,90 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
+"""Optional helper for fetching AgentCards from the Registry Center.
+
+Users can use this, or fetch AgentCards from any other source.
+The SDK does not depend on this module.
+"""
+
+import json
+from typing import List, Any
+from loguru import logger
+
+from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
+
+
+class RegistryClient:
+    """Fetches AgentCards from the Registry Center."""
+
+    def __init__(self, url: str, verify_ssl: bool = False):
+        self.url = url.rstrip("/")
+        self.verify_ssl = verify_ssl
+
+    async def fetch_agent_cards(self) -> List[Any]:
+        """Fetch all AgentCards. Returns protobuf objects if a2a-sdk available, else dicts."""
+        import httpx
+        logger.info(f"[Registry] Fetching all agent cards from {self.url}")
+        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
+            resp = await client.get(f"{self.url}/rest/v1/registry-center/agent-cards")
+            resp.raise_for_status()
+            data = resp.json()
+            raw_cards = data.get("agentCards", data.get("data", []))
+        logger.info(f"[Registry] Received {len(raw_cards)} agent card(s)")
+        try:
+            from a2a.types import AgentCard
+            from google.protobuf.json_format import Parse
+            cards = []
+            for raw in raw_cards:
+                normalized = normalize_agent_dict(raw)
+                cards.append(Parse(json.dumps(normalized), AgentCard()))
+            logger.info(f"[Registry] Parsed {len(cards)} AgentCard(s) into protobuf objects")
+            return cards
+        except ImportError:
+            logger.info(f"[Registry] a2a-sdk not available, returning raw dicts")
+            return raw_cards
+
+    async def fetch_agent_card(self, name: str, organization: str = None) -> Any:
+        """Fetch a single AgentCard by name."""
+        import httpx
+        logger.info(f"[Registry] Fetching agent card: name={name}, org={organization}")
+        params = {"name": name}
+        if organization:
+            params["organization"] = organization
+        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
+            resp = await client.get(f"{self.url}/rest/v1/registry-center/agent-cards", params=params)
+            resp.raise_for_status()
+            data = resp.json()
+            cards = data.get("agentCards", data.get("data", []))
+            if not cards:
+                logger.warning(f"[Registry] Agent card not found: name={name}")
+                return None
+            raw = cards[0]
+            try:
+                from a2a.types import AgentCard
+                from google.protobuf.json_format import Parse
+                normalized = normalize_agent_dict(raw)
+                card = Parse(json.dumps(normalized), AgentCard())
+                logger.info(f"[Registry] Agent card parsed: name={name}")
+                return card
+            except ImportError:
+                logger.info(f"[Registry] a2a-sdk not available, returning raw dict")
+                return raw
+
+    @property
+    def base_url(self) -> str:
+        return self.url

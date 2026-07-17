@@ -218,49 +218,50 @@ Uncomment when A2A-T SDK adds support.
 
 ## File Structure
 
-```
+`
 workflow-exec-engine/
-??? README.md                     # Chinese documentation
-??? README_en.md                  # English documentation
-??? requirements.txt              # Python dependencies
-??? setup.py                       # Package installation
-??? examples/
-?   ??? quickstart.py             # Quick start example
-??? a2at_engine/
-    ??? __init__.py               # Public API exports
-    ??? core/                     # Core execution logic
-    ?   ??? __init__.py
-    ?   ??? models.py             # Data models (Workflow, Task, etc.)
-    ?   ??? context_builder.py    # Context assembly from upstream outputs
-    ?   ??? executor.py           # WorkflowExecutor ? DAG traversal
-    ??? client/                   # Communication layer (self-contained)
-    ?   ??? __init__.py
-    ?   ??? engine_client.py      # WorkflowEngineClient
-    ?   ??? auth_manager.py       # AuthManager ? interceptors from AgentCard
-    ?   ??? extension_handlers.py # 4 A2A-T handlers
-    ?   ??? sse_normalization.py  # SSE response normalization
-    ?   ??? ssl_context.py        # SSL context factory
-    ?   ??? credential_service.py# Credential service + auth interceptors
-    ?   ??? extension_interceptor.py # A2A-Extensions header injection
-    ?   ??? agentcard_normalizer.py  # AgentCard normalization
-    ??? control/                  # User-facing interfaces
-    ?   ??? __init__.py
-    ?   ??? control_points.py     # ControlPoint + EventCallback
-    ??? registry/                 # Registry integration (optional)
-        ??? __init__.py
-        ??? registry_client.py    # Fetch AgentCards from registry
-```
+├── README.md                     # Chinese documentation
+├── README_en.md                  # English documentation
+├── LICENSE                       # Apache 2.0 license
+├── pyproject.toml                # Package metadata + build config
+├── requirements.txt              # Python dependencies
+├── MANIFEST.in                   # Package manifest
+├── examples/
+│   ├── quickstart.py             # Quick start example
+│   └── agent_credentials.example.json  # Auth config example
+└── a2at_engine/
+    ├── __init__.py               # Public API exports
+    ├── core/                     # Core execution logic
+    │   ├── __init__.py
+    │   ├── models.py             # Data models (Workflow, Task, etc.)
+    │   ├── context_builder.py    # Context assembly from upstream outputs
+    │   └── executor.py           # WorkflowExecutor -- DAG traversal
+    ├── client/                   # Communication layer (self-contained)
+    │   ├── __init__.py
+    │   ├── engine_client.py      # WorkflowEngineClient
+    │   ├── auth_manager.py       # AuthManager -- interceptors from AgentCard
+    │   ├── extension_handlers.py # 4 A2A-T handlers
+    │   ├── sse_normalization.py  # SSE response normalization
+    │   ├── ssl_context.py        # SSL context factory
+    │   ├── credential_service.py # Credential service + auth interceptors
+    │   ├── extension_interceptor.py # A2A-Extensions header injection
+    │   └── agentcard_normalizer.py  # AgentCard normalization
+    ├── control/                  # User-facing interfaces
+    │   ├── __init__.py
+    │   └── control_points.py     # ControlPoint + EventCallback
+    └── registry/                 # Registry integration (optional)
+        ├── __init__.py
+        └── registry_client.py    # Fetch AgentCards from registry
+`
 
 ## Dependencies
 
-```
-registry/  ???? depends on ???> client/ (agentcard_normalizer)
-control/   ???? depends on ???> core/ (models)
-client/    ???? depends on ???> core/ (models), a2a-sdk, a2a-t-sdk (external)
-core/      ???? depends on ???> core/ (self), control/ (type hints only)
-```
-
-The SDK has zero dependencies on the orchestration center code.
+`
+registry/  ─── depends on ───> client/ (agentcard_normalizer)
+control/   ─── depends on ───> core/ (models)
+client/    ─── depends on ───> core/ (models), a2a-sdk, a2a-t-sdk (external)
+core/      ─── depends on ───> core/ (self), control/ (type hints only)
+`
 
 ## Comparison with Orchestration Center
 

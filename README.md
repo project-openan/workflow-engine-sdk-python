@@ -198,7 +198,7 @@ class MyEventCallback(EventCallback):
 - 认证方案名必须与 AgentCard 的 securitySchemes 的键一致。
 - AgentCard 中没有 securitySchemes 的智能体不需要配置。
 - 参见 examples/agent_credentials.example.json 获取完整示例。
-- 除文件路径外，也可直接传入 dict：crendentials_config=dict。
+- 除文件路径外，也可直接传入 dict：credentials_config=dict。
 
 ## A2A-T 扩展处理器
 

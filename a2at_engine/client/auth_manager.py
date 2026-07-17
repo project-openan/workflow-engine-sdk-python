@@ -61,21 +61,22 @@ class AuthManager:
             if not hasattr(card, "name"):
                 continue
             interceptors = []
+            cred_svc = None
             if card.security_schemes and card.security_requirements:
                 cred_svc = self._auth_manager.get_service(card.name)
             else:
                 logger.info(f"[AuthManager] Agent {card.name}: no security schemes, skipping auth")
                 if not (getattr(card, "capabilities", None) and card.capabilities.extensions):
                     continue
-                if cred_svc is not None:
-                    logger.info(f"[AuthManager] Agent {card.name}: credentials found")
-                    agent_cfg = self._auth_manager.get_config(card.name) or {}
-                    if any(isinstance(v, dict) and (v.get("auth_header") or v.get("accept_header"))
-                           for v in agent_cfg.values()):
-                        interceptors.append(CustomAuthInterceptor(cred_svc, agent_cfg))
-                    else:
-                        interceptors.append(AuthInterceptor(cred_svc))
-                    logger.info(f"Agent '{card.name}' configured with auth interceptor")
+            if cred_svc is not None:
+                logger.info(f"[AuthManager] Agent {card.name}: credentials found")
+                agent_cfg = self._auth_manager.get_config(card.name) or {}
+                if any(isinstance(v, dict) and (v.get("auth_header") or v.get("accept_header"))
+                       for v in agent_cfg.values()):
+                    interceptors.append(CustomAuthInterceptor(cred_svc, agent_cfg))
+                else:
+                    interceptors.append(AuthInterceptor(cred_svc))
+                logger.info(f"[AuthManager] Agent {card.name}: configured with {type(interceptors[0]).__name__}")
             if getattr(card, "capabilities", None) and card.capabilities.extensions:
                 ext_uris = [ext.uri for ext in card.capabilities.extensions if ext.uri]
                 if ext_uris:

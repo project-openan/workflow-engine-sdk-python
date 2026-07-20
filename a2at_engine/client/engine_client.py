@@ -94,11 +94,13 @@ class WorkflowEngineClient:
     # Setup helpers
     # ------------------------------------------------------------------
 
-    def _init_a2at_client(self, a2at_env_path: Optional[str]):
+    def _init_a2at_client(self, a2at_env_path):
         if not a2at_env_path or not _A2AT_AVAILABLE:
             return None
+        from pathlib import Path
+        env_path = Path(a2at_env_path) if not isinstance(a2at_env_path, Path) else a2at_env_path
         try:
-            client = A2ATClient(env_path=a2at_env_path)
+            client = A2ATClient(env_path=env_path)
             logger.info("A2ATClient initialized")
             return client
         except Exception as e:

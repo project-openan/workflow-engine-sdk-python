@@ -32,7 +32,7 @@ Quick start:
     # 3. User implements ControlPoint (decision layer)
     class MyCP(ControlPoint):
         async def on_task(self, request, engine_client):
-            result = await engine_client.send_message(request.agent_name, request.task_description)
+            result = await engine_client.send_message(request.agent_name, request.message)
             return TaskResponse(success=True, output=result.text)
         async def on_route(self, step_name, results, conditions):
             return RouteDecision(next_step="step_b")
@@ -58,8 +58,9 @@ from a2at_engine.client import (
     AuthorizationTHandler, NotificationTHandler, ExtensionRegistry,
     create_ssl_context, normalize_agent_dict,
 )
-from a2at_engine.control import ControlPoint, EventCallback
+from a2at_engine.control import ControlPoint, EventCallback, EventType
 from a2at_engine.registry import RegistryClient
+from a2at_engine.runner import execute_psop
 
 __all__ = [
     # Core
@@ -73,9 +74,11 @@ __all__ = [
     "AuthorizationTHandler", "NotificationTHandler", "ExtensionRegistry",
     "create_ssl_context", "normalize_agent_dict",
     # Control (user implements)
-    "ControlPoint", "EventCallback",
+    "ControlPoint", "EventCallback", "EventType",
     # Registry (optional)
     "RegistryClient",
+    # High-level runner
+    "execute_psop",
 ]
 
 __version__ = "0.3.0"

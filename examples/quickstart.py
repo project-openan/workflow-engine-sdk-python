@@ -43,14 +43,14 @@ class MyControlPoint(ControlPoint):
         # User decides whether/how to send the task
         result = await engine_client.send_message(
             request.agent_name,
-            request.task_description,
+            request.message,
         )
         return TaskResponse(success=True, output=result.text)
 
     async def on_route(self, step_name, results, conditions):
         # User decides which branch to take
         # In production, use your own LLM or business logic here
-        return RouteDecision(next_step=conditions[0]["step"])
+        return RouteDecision(next_step=conditions[0].step)
 
     async def on_authorization(self, agent_name, auth_request):
         # User approves or denies authorization requests
@@ -73,7 +73,7 @@ async def main():
     )
 
     # 3. Load a workflow from the orchestration center (external API)
-    workflow = WorkflowExecutor.load_workflow_from_orchestration_center(
+    workflow = await WorkflowExecutor.load_workflow_from_orchestration_center(
         base_url="http://127.0.0.1:5001",
         psop_id="your-psop-id-here",
         access_token="your-access-token-if-auth-enabled",

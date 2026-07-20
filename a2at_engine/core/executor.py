@@ -71,6 +71,7 @@ class WorkflowExecutor:
         ])
         executed = set()
         defer_count: Dict[int, int] = {}
+        failed = False
         try:
             while pending:
                 idx = pending.popleft()
@@ -95,6 +96,7 @@ class WorkflowExecutor:
                 if not success:
                     logger.error(f"Step {step.name} failed, stopping.")
                     self._emit_event("error", {"step": step.name, "results": step_result})
+                    failed = True
                     break
                 self._emit_event("step_complete", {"step": step.name, "results": step_result})
                 next_indices = await self._determine_next_steps(step, step_result)
@@ -107,7 +109,9 @@ class WorkflowExecutor:
                                    step_outputs=self.step_outputs, error=str(e))
         self._emit_event("workflow_complete", {})
         logger.info(f"[Executor] Workflow completed: {self.workflow.name}, {len(self.execution_history)} task(s) executed")
-        return ExecutionResult(success=True, history=self.execution_history, step_outputs=self.step_outputs)
+        return ExecutionResult(success=not failed, history=self.execution_history,
+                               step_outputs=self.step_outputs,
+                               error=("Step execution failed" if failed else None))
 
     async def _execute_subtasks(self, step: WorkflowStep) -> tuple[Dict[str, Any], bool]:
         context_message = self.context_builder.build_context(step, self.step_outputs)
@@ -116,13 +120,15 @@ class WorkflowExecutor:
 
         async def execute_single(task: Task, subtask_index: int) -> tuple[str, Any, bool]:
             task_message = self.context_builder.build_task_message(task.description, context_message, self.lang)
-            request = TaskRequest(agent_name=task.agent, skill=task.skill, task_description=task_message,
-                                   context=context_message, step_name=step.name, subtask_index=subtask_index)
+            request = TaskRequest(agent_name=task.agent, skill=task.skill, message=task_message,
+                                    description=task.description,
+                                    context=context_message, step_name=step.name, subtask_index=subtask_index)
             self._emit_event("task_request", {"step": step.name, "agent": task.agent, "task": task.description})
             logger.info(f"[Executor] Dispatching task to agent {task.agent}: {task.description[:80]}")
             try:
                 response = await self.control_point.on_task(request, self.engine_client)
                 task.status = TaskStatus.SUCCESS if response.success else TaskStatus.FAILED
+                self._emit_event("task_status_changed", {"step": step.name, "subtask_index": subtask_index, "agent": task.agent, "status": task.status.value})
                 status = "success" if response.success else "failed"
                 logger.info(f"[Executor] Task {task.description[:60]} -> {task.agent}: {status}")
                 self.execution_history.append({"step": step.name, "task": task.description, "agent": task.agent,
@@ -133,6 +139,7 @@ class WorkflowExecutor:
                 return task.description, response.output, response.success
             except Exception as e:
                 task.status = TaskStatus.FAILED
+                self._emit_event("task_status_changed", {"step": step.name, "subtask_index": subtask_index, "agent": task.agent, "status": task.status.value})
                 logger.error(f"[Executor] Task {task.description[:60]} -> {task.agent}: exception: {e}")
                 self.execution_history.append({"step": step.name, "task": task.description, "agent": task.agent,
                     "status": "failed", "output": str(e)})
@@ -160,36 +167,54 @@ class WorkflowExecutor:
     async def _determine_next_steps(self, step: WorkflowStep, step_result: Dict[str, Any]) -> List[int]:
         if not step.next:
             return []
-        if len(step.next) == 1 and not step.next[0].condition:
-            idx = self.context_builder.find_step_index(step.next[0].step)
-            return [idx] if idx is not None else []
-        conditions = [{"step": jc.step, "condition": jc.condition} for jc in step.next]
-        decision = await self.control_point.on_route(step.name, step_result, conditions)
+        # All-unconditional next steps -> fan out (parallel execution),
+        # skipping terminal markers. Mirrors the original engine's semantics:
+        # empty conditions mean "go to all of them", not "pick one".
+        if all(not jc.condition for jc in step.next):
+            indices = []
+            for jc in step.next:
+                if jc.step in ("end", "retry", "endNode"):
+                    continue
+                idx = self.context_builder.find_step_index(jc.step)
+                if idx is not None:
+                    indices.append(idx)
+            return indices
+        # Has conditional branches -> user decides via on_route.
+        decision = await self.control_point.on_route(step.name, step_result, step.next)
         logger.info(f"Route for '{step.name}': {decision.next_step} ({decision.reason})")
         self._emit_event("route_decision", {"step": step.name, "next": decision.next_step, "reason": decision.reason})
         idx = self.context_builder.find_step_index(decision.next_step)
+        if idx is None:
+            allowed = [jc.step for jc in step.next]
+            logger.warning(
+                f"on_route returned '{decision.next_step}' for step '{step.name}', "
+                f"not in allowed next steps {allowed}; workflow will end."
+            )
         return [idx] if idx is not None else []
 
     @staticmethod
-    def load_workflow_from_orchestration_center(
+    async def load_workflow_from_orchestration_center(
         base_url: str,
         psop_id: str,
         access_token: str = None,
+        ssl_verify: bool = True,
     ) -> Workflow:
         """Fetch a PSOP from the orchestration center external API.
 
         Uses the public external endpoint GET /api/v1/orchestrate/psop/{psop_id}.
         Pass access_token when the orchestration center has external auth enabled.
+        Set ssl_verify=False for self-signed certs (dev only; not for production).
         """
         import httpx
         url = f"{base_url}/api/v1/orchestrate/psop/{psop_id}"
         params = {}
         if access_token:
             params["access_token"] = access_token
-        logger.info(f"[Executor] Loading PSOP from {url}")
-        resp = httpx.get(url, params=params, timeout=30, verify=False)
-        resp.raise_for_status()
-        data = resp.json()
+        logger.info(f"[Executor] Loading PSOP from {url} (ssl_verify={ssl_verify})")
+        async with httpx.AsyncClient(verify=ssl_verify, timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url, params=params)
+            resp.raise_for_status()
+            data = resp.json()
         wf = Workflow.from_dict(data.get("data", data))
         logger.info(f"[Executor] Loaded workflow: {wf.name}, {len(wf.steps)} steps")
         return wf

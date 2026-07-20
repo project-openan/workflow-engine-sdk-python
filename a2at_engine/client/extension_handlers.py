@@ -40,7 +40,7 @@ class ExtensionHandler(ABC):
         ...
 
     @abstractmethod
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None) -> SendMessageResult:
+    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None) -> SendMessageResult:
         ...
 
 
@@ -81,7 +81,7 @@ class TaskTHandler(ExtensionHandler):
             logger.warning(f"[Task-T] Failed: {e}")
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None):
+    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
         return result
 
 
@@ -91,7 +91,7 @@ class NegotiationTHandler(ExtensionHandler):
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None):
+    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
         if not a2at_client:
             return result
         if result.task_state != "INPUT_REQUIRED":
@@ -119,20 +119,29 @@ class AuthorizationTHandler(ExtensionHandler):
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None):
+    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
         auth_request = result.metadata.get("Authorization-T") if result.metadata else None
         if not auth_request or not control_point:
             return result
         agent_name = getattr(agent_card, "name", "")
         logger.info(f"[Authorization-T] Agent '{agent_name}' requests authorization")
+        if event_callback:
+            event_callback.on_event("authorization_request", {
+                "agent": agent_name,
+                "auth_request": auth_request if isinstance(auth_request, (str, dict)) else str(auth_request),
+            })
         approved = await control_point.on_authorization(agent_name, auth_request)
         if approved:
             result.metadata["authorization_approved"] = True
             logger.info(f"[Authorization-T] Approved for '{agent_name}'")
+            if event_callback:
+                event_callback.on_event("authorization_resolved", {"agent": agent_name, "decision": "approved"})
         else:
             result.task_state = "AUTHORIZATION_DENIED"
             result.text = result.text or "Authorization denied"
             logger.warning(f"[Authorization-T] Denied for '{agent_name}'")
+            if event_callback:
+                event_callback.on_event("authorization_resolved", {"agent": agent_name, "decision": "denied"})
         return result
 
 
@@ -142,12 +151,17 @@ class NotificationTHandler(ExtensionHandler):
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None):
+    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
         notification = result.metadata.get("Notification-T") if result.metadata else None
         if not notification or not control_point:
             return result
         agent_name = getattr(agent_card, "name", "")
         logger.info(f"[Notification-T] Received notification from '{agent_name}'")
+        if event_callback:
+            event_callback.on_event("notification", {
+                "agent": agent_name,
+                "notification": notification if isinstance(notification, (str, dict)) else str(notification),
+            })
         await control_point.on_notification(agent_name, notification)
         return result
 
@@ -157,8 +171,8 @@ class ExtensionRegistry:
         self._handlers: Dict[str, ExtensionHandler] = {}
         self.register(TaskTHandler())
         self.register(NegotiationTHandler())
-        # self.register(AuthorizationTHandler())  # uncomment when A2A-T adds support
-        # self.register(NotificationTHandler())   # uncomment when A2A-T adds support
+        self.register(AuthorizationTHandler())
+        self.register(NotificationTHandler())
 
     def register(self, handler: ExtensionHandler):
         self._handlers[handler.extension_keyword] = handler

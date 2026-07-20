@@ -94,7 +94,7 @@ engine_client = WorkflowEngineClient(
 class MyControlPoint(ControlPoint):
     async def on_task(self, request, engine_client):
         result = await engine_client.send_message(
-            request.agent_name, request.task_description
+            request.agent_name, request.message
         )
         return TaskResponse(success=True, output=result.text)
 
@@ -109,7 +109,7 @@ class MyControlPoint(ControlPoint):
         print(f"Notification from {agent_name}: {notification}")
 
 # 4. Load workflow and execute
-workflow = WorkflowExecutor.load_workflow_from_orchestration_center(
+workflow = await WorkflowExecutor.load_workflow_from_orchestration_center(
     base_url="http://127.0.0.1:5001", psop_id="abc-123",
     access_token="your-token-if-auth-enabled"
 )
@@ -124,14 +124,16 @@ result = await executor.run()
 
 ## User-Facing APIs
 
-### ControlPoint (user MUST implement)
+### ControlPoint (on_task / on_route required, others optional)
 
-| Method | When called | User decides |
-|--------|-------------|-------------|
-| `on_task(request, engine_client)` | Step needs to send a task | Whether/how to send, what to return |
-| `on_route(step_name, results, conditions)` | Step has multiple branches | Which branch to take |
-| `on_authorization(agent_name, auth_request)` | Agent returns Authorization-T | Approve/deny |
-| `on_notification(agent_name, notification)` | Agent pushes Notification-T | How to handle |
+`on_authorization` and `on_notification` have default implementations (approve / no-op) and are only invoked when the corresponding extension handler is registered.
+
+| Method | Required? | When called | User decides |
+|--------|-----------|-------------|-------------|
+| `on_task(request, engine_client)` | Yes | Step needs to send a task | Whether/how to send, what to return |
+| `on_route(step_name, results, conditions)` | Yes | Step has multiple branches | Which branch to take |
+| `on_authorization(agent_name, auth_request)` | No (default: approve) | Agent returns Authorization-T | Approve/deny |
+| `on_notification(agent_name, notification)` | No (default: no-op) | Agent pushes Notification-T | How to handle |
 
 ### WorkflowEngineClient (SDK provides, user calls)
 

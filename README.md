@@ -94,7 +94,7 @@ engine_client = WorkflowEngineClient(
 class MyControlPoint(ControlPoint):
     async def on_task(self, request, engine_client):
         result = await engine_client.send_message(
-            request.agent_name, request.task_description
+            request.agent_name, request.message
         )
         return TaskResponse(success=True, output=result.text)
 
@@ -109,7 +109,7 @@ class MyControlPoint(ControlPoint):
         print(f"Notification from {agent_name}: {notification}")
 
 # 4. 加载工作流并执行
-workflow = WorkflowExecutor.load_workflow_from_orchestration_center(
+workflow = await WorkflowExecutor.load_workflow_from_orchestration_center(
     base_url="http://127.0.0.1:5001", psop_id="abc-123",
     access_token="your-token-if-auth-enabled"
 )
@@ -124,14 +124,16 @@ result = await executor.run()
 
 ## 用户需要实现的接口
 
-### ControlPoint（用户必须实现）
+### ControlPoint（on_task / on_route 必需，其余可选）
 
-| 方法 | 调用时机 | 用户决定 |
-|------|---------|---------|
-| `on_task(request, engine_client)` | 步骤需要向 Agent 发送任务 | 是否/如何发送，返回什么结果 |
-| `on_route(step_name, results, conditions)` | 步骤有多个分支 | 走哪个分支 |
-| `on_authorization(agent_name, auth_request)` | Agent 返回 Authorization-T 请求 | 授权/拒绝 |
-| `on_notification(agent_name, notification)` | Agent 推送 Notification-T 消息 | 如何处理通知 |
+`on_authorization` 和 `on_notification` 有默认实现（批准 / no-op），仅在对应扩展处理器注册时被调用。
+
+| 方法 | 必需？ | 调用时机 | 用户决定 |
+|------|--------|---------|---------|
+| `on_task(request, engine_client)` | 是 | 步骤需要向 Agent 发送任务 | 是否/如何发送，返回什么结果 |
+| `on_route(step_name, results, conditions)` | 是 | 步骤有多个分支 | 走哪个分支 |
+| `on_authorization(agent_name, auth_request)` | 否（默认批准） | Agent 返回 Authorization-T 请求 | 授权/拒绝 |
+| `on_notification(agent_name, notification)` | 否（默认 no-op） | Agent 推送 Notification-T 消息 | 如何处理通知 |
 
 ### WorkflowEngineClient（SDK 提供，用户调用）
 

@@ -16,6 +16,6 @@
 #    under the License.
 
 
-from a2at_engine.control.control_points import ControlPoint, EventCallback
+from a2at_engine.control.control_points import ControlPoint, EventCallback, EventType
 
-__all__ = ["ControlPoint", "EventCallback"]
+__all__ = ["ControlPoint", "EventCallback", "EventType"]

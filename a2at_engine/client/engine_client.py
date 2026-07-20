@@ -40,6 +40,8 @@ from a2at_engine.client.ssl_context import create_ssl_context
 from a2at_engine.client.auth_manager import AuthManager
 from a2at_engine.client.extension_handlers import ExtensionRegistry, ExtensionHandler
 from a2at_engine.client.sse_normalization import apply_sse_normalization
+from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
+from a2at_engine.control.control_points import EventCallback
 from a2at_engine.core.models import SendMessageResult
 
 # Apply SSE response normalization once at import time.
@@ -64,12 +66,14 @@ class WorkflowEngineClient:
         httpx_client: Optional[httpx.AsyncClient] = None,
         credentials_config: Optional[str | Dict] = None,
         a2at_env_path: Optional[str] = None,
-        ssl_verify: bool = False,
+        ssl_verify: bool = True,
         ca_certs_path: Optional[str] = None,
         custom_handlers: Optional[List[ExtensionHandler]] = None,
+        event_callback: Optional[EventCallback] = None,
     ):
+        normalized_cards = self._normalize_cards(agent_cards)
         self._card_map = {
-            card.name: card for card in agent_cards if hasattr(card, "name")
+            card.name: card for card in normalized_cards if hasattr(card, "name")
         }
         self._httpx_client = httpx_client or self._create_httpx_client(
             ssl_verify, ca_certs_path
@@ -83,6 +87,7 @@ class WorkflowEngineClient:
         self._a2at_client = self._init_a2at_client(a2at_env_path)
         self._context_id = str(uuid.uuid4())
         self._control_point = None
+        self._event_callback = event_callback
         logger.info(f"[EngineClient] Initialized with {len(self._card_map)} agent(s), ssl_verify={ssl_verify}, a2at={self._a2at_client is not None}")
 
     # ------------------------------------------------------------------
@@ -101,6 +106,11 @@ class WorkflowEngineClient:
             return None
 
     def _create_httpx_client(self, ssl_verify, ca_certs_path) -> httpx.AsyncClient:
+        if not ssl_verify:
+            logger.warning(
+                "[EngineClient] ssl_verify=False — TLS server certificate "
+                "validation disabled. Not recommended for production."
+            )
         ssl_ctx = create_ssl_context(
             verify_server=ssl_verify, ca_certs_path=ca_certs_path
         )
@@ -116,6 +126,15 @@ class WorkflowEngineClient:
 
     def set_control_point(self, control_point):
         self._control_point = control_point
+
+    def set_event_callback(self, callback):
+        """Attach an EventCallback so send_message emits agent_request/response."""
+        self._event_callback = callback
+
+    def _emit(self, event_type: str, data: Dict[str, Any]):
+        """Emit an event through the attached EventCallback (if any)."""
+        if self._event_callback:
+            self._event_callback.on_event(event_type, data)
 
     async def close(self):
         if self._httpx_client:
@@ -144,8 +163,40 @@ class WorkflowEngineClient:
     @staticmethod
     def normalize_agent_dict(agent_dict: Dict[str, Any]) -> Dict[str, Any]:
         """Normalize an AgentCard dict to protobuf-compatible format."""
-        from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
         return normalize_agent_dict(agent_dict)
+
+    @staticmethod
+    def _normalize_cards(agent_cards: List[Any]) -> List[Any]:
+        """Auto-normalize dict AgentCards into protobuf objects.
+
+        Mirrors RegistryClient: dict -> normalize_agent_dict -> Parse(AgentCard()).
+        Protobuf AgentCard objects are passed through unchanged.
+        """
+        import json
+        try:
+            from a2a.types import AgentCard
+            from google.protobuf.json_format import Parse
+        except ImportError:
+            AgentCard = None
+            Parse = None
+        result = []
+        for card in agent_cards:
+            if isinstance(card, dict):
+                normalized = normalize_agent_dict(card)
+                if AgentCard is None or Parse is None:
+                    raise TypeError(
+                        "agent_cards contains dict entries but a2a-sdk is not "
+                        "installed; pass protobuf AgentCard objects instead "
+                        "(e.g. via RegistryClient.fetch_agent_cards())."
+                    )
+                try:
+                    card = Parse(json.dumps(normalized), AgentCard())
+                except Exception as e:
+                    raise TypeError(f"Failed to parse AgentCard dict: {e}") from e
+                name = getattr(card, "name", "") or "<unknown>"
+                logger.info(f"[EngineClient] Auto-normalized dict AgentCard -> {name}")
+            result.append(card)
+        return result
 
     # ------------------------------------------------------------------
     # Core: send_message
@@ -166,8 +217,9 @@ class WorkflowEngineClient:
             logger.error(f"[EngineClient] Agent not found: {agent_name}")
             raise RuntimeError(f"Agent not found: {agent_name}")
         logger.info(f"[EngineClient] send_message to {agent_name}: {len(message)} chars")
-
         metadata = await self._run_before_send_handlers(agent_card, message, metadata)
+        if self._event_callback:
+            self._emit("agent_request", {"agent": agent_name, "request": message, "metadata": metadata or {}})
         client = self._create_a2a_client(agent_card)
         send_req = self._build_send_request(message, context_id, metadata)
 
@@ -186,6 +238,8 @@ class WorkflowEngineClient:
             task_state=task_state,
         )
         result = await self._run_after_receive_handlers(agent_card, result)
+        if self._event_callback:
+            self._event_callback.on_event("agent_response", {"agent": agent_name, "response": result.text})
         return result
 
     async def send_message_with_negotiation(
@@ -247,7 +301,7 @@ class WorkflowEngineClient:
         for handler in handlers:
             result = await handler.after_receive(
                 agent_card, result,
-                self._a2at_client, self._control_point,
+                self._a2at_client, self._control_point, self._event_callback,
             )
         return result
 
@@ -375,22 +429,49 @@ class WorkflowEngineClient:
         neg_context = result.metadata.get("negotiation_context")
         neg_msg = result.metadata.get("negotiation_message", "")
 
-        # Fallback: no A2AT context, simple retry
+        # Emit negotiation_request for observability (frontend shows the round).
+        self._emit("negotiation_request", {
+            "agent": agent_name, "round": round_num,
+            "concern": (neg_msg or "")[:200] or "(Agent expressed uncertainty)",
+        })
+
+        # Fallback: no A2AT context -- still let the caller decide the
+        # clarification via the resolver, so the caller's negotiation policy
+        # covers ALL negotiation paths (not just A2A-T protocol ones).
         if not neg_context or not self._a2at_client:
             if neg_msg:
                 logger.info(
                     f"[Negotiation] Round {round_num} for '{agent_name}' "
-                    f"(no A2AT context, simple retry)"
+                    f"(no A2AT context)"
                 )
-                follow_up = (
-                    f"Original task: {original_message}\n\n"
-                    f"Clarification needed:\n{neg_msg}"
-                )
+                clarification = None
+                if resolver:
+                    try:
+                        clarification = resolver(agent_name, neg_msg, None)
+                    except Exception as e:
+                        logger.warning(f"[Negotiation] resolver raised in simple path: {e}")
+                        clarification = None
+                if clarification:
+                    self._emit("negotiation_resolved", {"agent": agent_name, "round": round_num, "clarification": clarification[:200]})
+                    follow_up = (
+                        f"[NEGOTIATION_RESOLUTION]\n"
+                        f"The engine has reviewed your negotiation request and provides "
+                        f"the following clarification:\n\n{clarification}\n\n"
+                        f"---\nOriginal Task:\n{original_message}\n\n"
+                        f"Please re-execute the task based on the clarification above."
+                    )
+                else:
+                    self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": "no clarification from resolver"})
+                    follow_up = (
+                        f"Original task: {original_message}\n\n"
+                        f"Clarification needed:\n{neg_msg}"
+                    )
                 return await self.send_message(agent_name, follow_up, context_id)
             return result
 
         if not _A2AT_AVAILABLE or NegotiationContext is None:
             logger.warning("[Negotiation] a2a-t negotiation models not available")
+            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": "a2a-t negotiation models not available"})
             return result
 
         logger.info(f"[Negotiation] Round {round_num} for '{agent_name}'")
@@ -402,23 +483,30 @@ class WorkflowEngineClient:
             )
         except Exception as e:
             logger.warning(f"[Negotiation] receive_negotiation failed: {e}")
+            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": f"receive_negotiation failed: {e}"})
             return result
 
         if not receive_result.get("needResponse", False):
             logger.warning(
                 f"[Negotiation] Agent '{agent_name}' does not need a response"
             )
+            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": "agent did not require a response"})
             return result
 
         # Resolve the negotiation -- user provides clarification or use default
-        clarification = (
-            resolver(agent_name, neg_msg, receive_result)
-            if resolver
-            else (
-                "Please proceed with the original task using the information "
-                "available. If you have specific questions, state them clearly."
+        try:
+            clarification = (
+                resolver(agent_name, neg_msg, receive_result)
+                if resolver
+                else (
+                    "Please proceed with the original task using the information "
+                    "available. If you have specific questions, state them clearly."
+                )
             )
-        )
+        except Exception as e:
+            logger.warning(f"[Negotiation] resolver raised: {e}")
+            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": f"resolver raised: {e}"})
+            return result
 
         try:
             ctx_obj = NegotiationContext.from_context(neg_context)
@@ -431,7 +519,10 @@ class WorkflowEngineClient:
             )
         except Exception as e:
             logger.error(f"[Negotiation] continue_negotiation failed: {e}")
+            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": f"continue_negotiation failed: {e}"})
             return result
+
+        self._emit("negotiation_resolved", {"agent": agent_name, "round": round_num, "clarification": (clarification or "")[:200]})
 
         # Build resolved task and retry
         follow_up = (

@@ -151,7 +151,7 @@ class WorkflowExecutor:
                 desc, output, success = await coro
                 results[desc] = output
                 if success:
-                    logger.info(f"[Executor] Step {step.name}: ANY_SUCCESS, first success from agent {task.agent}")
+                    logger.info(f"[Executor] Step {step.name}: ANY_SUCCESS, first success for task: {desc}")
                     for t in tasks:
                         if not t.done(): t.cancel()
                     await asyncio.gather(*tasks, return_exceptions=True)

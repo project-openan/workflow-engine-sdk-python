@@ -182,7 +182,10 @@ class ExtensionRegistry:
         seen = set()
         for uri in extension_uris:
             for keyword, handler in self._handlers.items():
-                if keyword in uri and keyword not in seen:
+                # Case-insensitive match: extension URIs commonly use
+                # uppercase (e.g. "NEGOTIATION-T") while the handler keyword
+                # uses mixed case ("Negotiation-T").
+                if keyword.lower() in uri.lower() and keyword not in seen:
                     matched.append(handler)
                     seen.add(keyword)
                     break

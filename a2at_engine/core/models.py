@@ -26,6 +26,22 @@ class StepType(Enum):
     ALL_SUCCESS = "AllSuccess"
     ANY_SUCCESS = "AnySuccess"
 
+    @classmethod
+    def from_value(cls, value: Any) -> "StepType":
+        """Case-insensitive lookup by enum value or name.
+
+        Accepts "AllSuccess", "ALLSUCCESS", "allsuccess", "ALL_SUCCESS",
+        "any_success", etc. Falls back to ALL_SUCCESS when unknown.
+        Mirrors the Java SDK's StepType.fromValue().
+        """
+        if not value:
+            return cls.ALL_SUCCESS
+        text = str(value).strip()
+        for member in cls:
+            if member.value.lower() == text.lower() or member.name.lower() == text.lower():
+                return member
+        return cls.ALL_SUCCESS
+
 
 class TaskStatus(Enum):
     PENDING = "pending"
@@ -71,13 +87,7 @@ class Workflow:
             subtasks = [Task(agent=t.get("agent",""), skill=t.get("skill",""), description=t.get("description","")) for t in (s.get("subtasks") or [])]
             next_list = [JumpCondition(step=jc.get("step",""), condition=jc.get("condition","")) for jc in (s.get("next") or [])]
             st = s.get("step_type", s.get("type", "AllSuccess"))
-            try:
-                step_type = StepType(st)
-            except ValueError:
-                try:
-                    step_type = StepType(st.lower())
-                except ValueError:
-                    step_type = StepType.ALL_SUCCESS
+            step_type = StepType.from_value(st)
             cf = s.get("context_from")
             if cf and not isinstance(cf, list): cf = [cf]
             steps.append(WorkflowStep(name=s.get("name",""), subtasks=subtasks, next=next_list, layer=s.get("layer",0), context_from=cf, step_type=step_type))

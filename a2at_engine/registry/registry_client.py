@@ -60,15 +60,19 @@ async def load_psop(
 class RegistryClient:
     """Fetches AgentCards from the Registry Center."""
 
-    def __init__(self, url: str, verify_ssl: bool = False):
+    def __init__(self, url: str, ssl_verify: bool = False, verify_ssl: bool = None):
+        # Accept the legacy ``verify_ssl`` keyword for backward compatibility;
+        # ``ssl_verify`` matches WorkflowEngineClient / load_psop / execute_psop.
+        if verify_ssl is not None:
+            ssl_verify = verify_ssl
         self.url = url.rstrip("/")
-        self.verify_ssl = verify_ssl
+        self.ssl_verify = ssl_verify
 
     async def fetch_agent_cards(self) -> List[Any]:
         """Fetch all AgentCards. Returns protobuf objects if a2a-sdk available, else dicts."""
         import httpx
         logger.info(f"[Registry] Fetching all agent cards from {self.url}")
-        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
+        async with httpx.AsyncClient(verify=self.ssl_verify, timeout=30) as client:
             resp = await client.get(f"{self.url}/rest/v1/registry-center/agent-cards")
             resp.raise_for_status()
             data = resp.json()
@@ -94,7 +98,7 @@ class RegistryClient:
         params = {"name": name}
         if organization:
             params["organization"] = organization
-        async with httpx.AsyncClient(verify=self.verify_ssl, timeout=30) as client:
+        async with httpx.AsyncClient(verify=self.ssl_verify, timeout=30) as client:
             resp = await client.get(f"{self.url}/rest/v1/registry-center/agent-cards", params=params)
             resp.raise_for_status()
             data = resp.json()

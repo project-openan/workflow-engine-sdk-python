@@ -69,7 +69,7 @@ class MyControlPoint(ControlPoint):
 
 async def main():
     # 1. Get AgentCards from registry (or your own source)
-    registry = RegistryClient(url="https://127.0.0.1:5000", verify_ssl=False)
+    registry = RegistryClient(url="https://127.0.0.1:5000", ssl_verify=False)
     agent_cards = await registry.fetch_agent_cards()
 
     # 2. Load a PSOP workflow from the orchestration center
@@ -113,26 +113,44 @@ if __name__ == "__main__":
 
 ### 3.3 Event Types
 
-| Event Type | When | Data Keys |
-|-----------|------|-----------|
-| `start` | Workflow begins | `workflow`, `steps` |
-| `step_start` | A step begins execution | `step` |
-| `agent_request` | Message sent to agent | `agent`, `request`, `metadata` |
-| `agent_response` | Response received from agent | `agent`, `response` |
-| `task_status_changed` | Task status updated | `step`, `subtask_index`, `agent`, `status` |
-| `route_decision` | Branch decision made | `step`, `next`, `reason` |
-| `step_complete` | Step finished | `step`, `results` |
-| `negotiation_request` | Agent needs clarification | `agent`, `round`, `concern` |
-| `negotiation_resolved` | Clarification provided | `agent`, `round`, `clarification` |
-| `negotiation_failed` | Negotiation failed | `agent`, `round`, `reason` |
-| `authorization_request` | Agent requests authorization | `agent`, `auth_request` |
-| `authorization_resolved` | Authorization decision | `agent`, `decision` |
-| `notification` | Agent pushes notification | `agent`, `notification` |
-| `complete` | Workflow succeeded | `history`, `step_outputs` |
-| `error` | Workflow failed | `error`, `history`, `step_outputs` |
-| `close` | Cleanup done | (empty) |
+Events come from three layers. The runner emits the lifecycle bracket
+(`start` ... `complete`/`error` ... `close`); the executor emits the
+step/task and routing events; the engine client emits agent traffic and
+the A2A-T extension handlers emit negotiation/authorization/notification.
 
-Compare with constants: `event["type"] == EventType.STEP_START`.
+| Event Type | Layer | When | Data Keys |
+|-----------|-------|------|-----------|
+| `start` | runner | Workflow begins | `workflow`, `steps` |
+| `step_start` | executor | A step begins execution | `step` |
+| `task_request` | executor | A subtask is dispatched to `on_task` | `step`, `agent`, `task` |
+| `task_response` | executor | `on_task` returned a `TaskResponse` | `step`, `agent`, `task`, `output` |
+| `task_status_changed` | executor | Task status updated | `step`, `subtask_index`, `agent`, `status` |
+| `route_decision` | executor | Branch decision made | `step`, `next`, `reason` |
+| `step_complete` | executor | Step finished | `step`, `results` |
+| `agent_request` | engine client | Message sent to agent | `agent`, `request`, `metadata` |
+| `agent_response` | engine client | Response received from agent | `agent`, `response` |
+| `negotiation_request` | engine client | Agent needs clarification | `agent`, `round`, `concern` |
+| `negotiation_resolved` | engine client | Clarification provided | `agent`, `round`, `clarification` |
+| `negotiation_failed` | engine client | Negotiation failed | `agent`, `round`, `reason` |
+| `authorization_request` | extension | Agent requests authorization | `agent`, `auth_request` |
+| `authorization_resolved` | extension | Authorization decision | `agent`, `decision` |
+| `notification` | extension | Agent pushes notification | `agent`, `notification` |
+| `workflow_complete` | executor | Executor finished traversal (precedes `complete`/`error`) | (empty) |
+| `complete` | runner | Workflow succeeded | `history`, `step_outputs` |
+| `error` | runner or executor | Workflow failed | runner: `error`, `history`, `step_outputs`; executor: `step`, `results` |
+| `close` | runner | Cleanup done | (empty) |
+
+Compare with constants: `event["type"] == EventType.STEP_START` (or
+`EventType.TASK_REQUEST`, `EventType.NEGOTIATION_RESOLVED`, etc.). Every
+type in the table has a matching constant in `EventType`.
+
+> **`workflow_complete` vs `complete`, and duplicate `error`:** the
+> executor emits `workflow_complete` as soon as DAG traversal ends, then
+> the runner emits `complete` (success) or `error` (failure) with the
+> final `ExecutionResult`. On a step failure the executor emits an
+> `error` carrying `step`/`results`, and the runner later emits a
+> second `error` carrying `history`/`step_outputs` -- check `data` keys
+> to tell them apart. `on_event` and `on_finish` receive both.
 
 ### 3.4 Persistence Hook (`on_finish`)
 
@@ -239,16 +257,29 @@ the workflow.
 
 Pass a `negotiation_resolver` to `send_message_with_negotiation` (Layer 1)
 or use `ControlPoint.on_task` to call it (Layer 2). The resolver is called
-when an agent returns `INPUT_REQUIRED`:
+(once per round, up to `max_rounds`) when an agent returns `INPUT_REQUIRED`:
 
 ```python
 async def my_resolver(agent_name, negotiation_text, receive_result):
-    """Generate a clarification for the agent."""
-    # receive_result: dict with needResponse, message, facts (from A2A-T SDK)
-    # Return: clarification string, or None to fail the negotiation
+    """Generate a clarification for the agent.
+
+    Both sync and async resolvers are accepted: if the return value is a
+    coroutine, the SDK awaits it for you. Return the clarification string
+    to continue the negotiation, or None/empty to fail this round.
+    """
+    # negotiation_text: the agent's stated concern (may be "")
+    # receive_result: dict with needResponse, message, facts (from A2A-T SDK),
+    #                  or None when the negotiation has no A2A-T context
+    # Return: clarification string, or None / "" to fail the round
     prompt = f"Agent {agent_name} needs: {negotiation_text}"
     return await my_llm.generate(prompt)
 ```
+
+> The resolver may be a plain `def` returning `str`/`None`, or an
+> `async def` returning a coroutine of `str`/`None`. A falsy result
+> (`None`, `""`) is treated as "no clarification" and the round fails
+> (a `negotiation_failed` event is emitted); the loop then retries up
+> to `max_rounds`.
 
 ---
 
@@ -323,12 +354,17 @@ execute_psop(..., credentials_config={
 ```python
 from a2at_engine import RegistryClient
 
-registry = RegistryClient(url="https://127.0.0.1:5000", verify_ssl=False)
+registry = RegistryClient(url="https://127.0.0.1:5000", ssl_verify=False)
 agent_cards = await registry.fetch_agent_cards()       # all cards
 card = await registry.fetch_agent_card(name="MyAgent") # single card
 ```
 
 Returns protobuf `AgentCard` objects if a2a-sdk is installed, else raw dicts.
+
+> **SSL parameter name:** `RegistryClient` uses `ssl_verify` to match
+> `WorkflowEngineClient`, `load_psop`, and `execute_psop`. The legacy
+> `verify_ssl` keyword is still accepted for backward compatibility, but
+> prefer `ssl_verify` in new code.
 
 ### 6.2 Custom Source
 
@@ -357,6 +393,24 @@ workflow = await load_psop(
 ```
 
 Uses the public external API `GET /api/v1/orchestrate/psop/{psop_id}`.
+
+---
+
+### 6.4 Workflow Model Fields
+
+A PSOP loaded by `load_psop` (or built via `Workflow.from_dict`) contains
+fields that drive execution. The ones most relevant to `ControlPoint`:
+
+| Field | Where | Meaning |
+|-------|-------|---------|
+| `steps[].step_type` | `WorkflowStep` | `AllSuccess` (default): every subtask must succeed; `AnySuccess`: the step succeeds as soon as one subtask succeeds (the rest are cancelled). |
+| `steps[].subtasks[]` | `Task` | Each has `agent`, `skill`, `description`. One `on_task` call is made per subtask. |
+| `steps[].next[]` | `List[JumpCondition]` | Branch targets. `JumpCondition.step` is the next step name; `JumpCondition.condition` is the rule text passed to `on_route`. |
+| `steps[].layer` | `WorkflowStep` | Steps with `layer == 0` start the DAG (their context is the runtime intent only). Higher layers get upstream step results in context. |
+| `steps[].context_from` | `WorkflowStep` | Optional list of step names whose outputs to fold into context. The special value `"*"` means "all ancestors". When omitted, direct predecessors are used. |
+
+`on_route` receives `conditions` (the `next` list) and must return a
+`next_step` that matches one of those `JumpCondition.step` values.
 
 ---
 

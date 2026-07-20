@@ -37,19 +37,51 @@ from a2at_engine.core.models import (
 
 
 class EventType:
-    """Execution event types emitted by WorkflowExecutor.
+    """Execution event types emitted by the SDK.
 
     Compare with ``event_type == EventType.STEP_START`` etc. Values are stable
     strings, so direct string comparison (``event_type == "step_start"``) also
     works for backward compatibility.
+
+    These constants cover every event emitted across the three layers:
+    lifecycle (``START``/``COMPLETE``/``ERROR``/``CLOSE`` from the runner),
+    step/task execution (``STEP_*``/``TASK_*`` from the executor), agent
+    traffic (``AGENT_*`` from the engine client), and the A2A-T extension
+    handlers (``NEGOTIATION_*``/``AUTHORIZATION_*``/``NOTIFICATION``).
+    The executor also emits ``WORKFLOW_COMPLETE`` just before the runner
+    emits ``COMPLETE`` (or ``ERROR``); see the Developer Guide for the full
+    event ordering.
     """
+    # Runner lifecycle (execute_psop)
+    START = "start"
+    COMPLETE = "complete"
+    CLOSE = "close"
+
+    # Step / task execution (WorkflowExecutor)
     STEP_START = "step_start"
     STEP_COMPLETE = "step_complete"
     TASK_REQUEST = "task_request"
     TASK_RESPONSE = "task_response"
+    TASK_STATUS_CHANGED = "task_status_changed"
     ROUTE_DECISION = "route_decision"
-    ERROR = "error"
     WORKFLOW_COMPLETE = "workflow_complete"
+
+    # Agent traffic (WorkflowEngineClient)
+    AGENT_REQUEST = "agent_request"
+    AGENT_RESPONSE = "agent_response"
+
+    # A2A-T extensions (negotiation / authorization / notification)
+    NEGOTIATION_REQUEST = "negotiation_request"
+    NEGOTIATION_RESOLVED = "negotiation_resolved"
+    NEGOTIATION_FAILED = "negotiation_failed"
+    AUTHORIZATION_REQUEST = "authorization_request"
+    AUTHORIZATION_RESOLVED = "authorization_resolved"
+    NOTIFICATION = "notification"
+
+    # Emitted by both the executor (step failure) and the runner (final
+    # failure). On failure you may see two "error" events with different
+    # data shapes -- see the Developer Guide.
+    ERROR = "error"
 
 
 class ControlPoint(ABC):

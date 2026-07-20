@@ -8,7 +8,8 @@ A2A-T extensions, streaming responses.  No orchestration center dependency.
 
 import json
 import uuid
-from typing import Dict, Any, List, Optional, Callable
+import asyncio
+from typing import Dict, Any, List, Optional, Callable, Union, Awaitable
 from loguru import logger
 
 import httpx
@@ -48,7 +49,10 @@ from a2at_engine.core.models import SendMessageResult
 apply_sse_normalization()
 
 # Type alias for the negotiation resolver callback.
-NegotiationResolver = Callable[[str, str, dict], str]
+# Type alias for the negotiation resolver callback. May be sync (returning
+# str/None) or async (returning an awaitable of str/None). The SDK awaits
+# coroutine results automatically, so an `async def` resolver is supported.
+NegotiationResolver = Callable[[str, str, dict], Union[str, None, Awaitable[Optional[str]]]]
 
 
 class WorkflowEngineClient:
@@ -425,6 +429,35 @@ class WorkflowEngineClient:
             result.task_state and "INPUT_REQUIRED" in result.task_state
         )
 
+    async def _await_resolver(
+        self,
+        resolver: Optional[NegotiationResolver],
+        agent_name: str,
+        negotiation_text: str,
+        receive_result: Optional[dict],
+    ) -> Optional[str]:
+        """Call the resolver, awaiting it if it returned a coroutine.
+
+        Accepts both sync (returning str/None) and ``async def`` resolvers.
+        An empty or None result is treated as "no clarification".
+        """
+        if resolver is None:
+            return None
+        try:
+            clarification = resolver(agent_name, negotiation_text, receive_result)
+        except Exception as e:
+            logger.warning(f"[Negotiation] resolver raised: {e}")
+            return None
+        if asyncio.iscoroutine(clarification):
+            try:
+                clarification = await clarification
+            except Exception as e:
+                logger.warning(f"[Negotiation] resolver await raised: {e}")
+                return None
+        if clarification is None:
+            return None
+        return str(clarification) if clarification else None
+
     async def _resolve_negotiation_round(
         self,
         agent_name: str,
@@ -454,11 +487,9 @@ class WorkflowEngineClient:
                 )
                 clarification = None
                 if resolver:
-                    try:
-                        clarification = resolver(agent_name, neg_msg, None)
-                    except Exception as e:
-                        logger.warning(f"[Negotiation] resolver raised in simple path: {e}")
-                        clarification = None
+                    clarification = await self._await_resolver(
+                        resolver, agent_name, neg_msg, None
+                    )
                 if clarification:
                     self._emit("negotiation_resolved", {"agent": agent_name, "round": round_num, "clarification": clarification[:200]})
                     follow_up = (
@@ -501,20 +532,19 @@ class WorkflowEngineClient:
             self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": "agent did not require a response"})
             return result
 
-        # Resolve the negotiation -- user provides clarification or use default
-        try:
-            clarification = (
-                resolver(agent_name, neg_msg, receive_result)
-                if resolver
-                else (
-                    "Please proceed with the original task using the information "
-                    "available. If you have specific questions, state them clearly."
-                )
+       # Resolve the negotiation -- user provides clarification or use default
+        if resolver:
+            clarification = await self._await_resolver(
+                resolver, agent_name, neg_msg, receive_result
             )
-        except Exception as e:
-            logger.warning(f"[Negotiation] resolver raised: {e}")
-            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": f"resolver raised: {e}"})
-            return result
+            if clarification is None:
+                self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": "no clarification from resolver"})
+                return result
+        else:
+            clarification = (
+                "Please proceed with the original task using the information "
+                "available. If you have specific questions, state them clearly."
+            )
 
         try:
             ctx_obj = NegotiationContext.from_context(neg_context)

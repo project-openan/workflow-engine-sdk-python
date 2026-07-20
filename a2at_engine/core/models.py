@@ -70,7 +70,6 @@ class Workflow:
         for s in data.get("steps", []):
             subtasks = [Task(agent=t.get("agent",""), skill=t.get("skill",""), description=t.get("description","")) for t in (s.get("subtasks") or [])]
             next_list = [JumpCondition(step=jc.get("step",""), condition=jc.get("condition","")) for jc in (s.get("next") or [])]
-            st = s.get("step_type", s.get("type", "allSuccess"))
             st = s.get("step_type", s.get("type", "AllSuccess"))
             try:
                 step_type = StepType(st)

@@ -76,7 +76,7 @@ sequenceDiagram
 ```python
 from a2at_engine import (
     WorkflowExecutor, ControlPoint, WorkflowEngineClient, RegistryClient,
-    Workflow, TaskResponse, RouteDecision,
+    Workflow, TaskResponse, RouteDecision, load_psop,
 )
 
 # 1. 获取 AgentCards（用户负责——从注册中心或自定义来源）
@@ -109,7 +109,7 @@ class MyControlPoint(ControlPoint):
         print(f"Notification from {agent_name}: {notification}")
 
 # 4. 加载工作流并执行
-workflow = await WorkflowExecutor.load_workflow_from_orchestration_center(
+workflow = await load_psop(
     base_url="http://127.0.0.1:5001", psop_id="abc-123",
     access_token="your-token-if-auth-enabled"
 )
@@ -213,7 +213,7 @@ SDK 内置处理器，不是用户实现的。当 A2A-T SDK 新增扩展类型�
 | `AuthorizationTHandler` | Authorization-T | 处理授权请求，委托 `on_authorization` | 是（用户批准/拒绝） |
 | `NotificationTHandler` | Notification-T | 处理通知推送，委托 `on_notification` | 是（用户处理通知） |
 
-`AuthorizationTHandler` 和 `NotificationTHandler` 已实现，在 A2A-T SDK 支持后取消注释启用。
+`AuthorizationTHandler`、`NotificationTHandler` 与 `TaskTHandler`、`NegotiationTHandler` 一样，已在 `ExtensionRegistry` 中完整实现并自动注册；当 AgentCard 声明对应扩展 URI 时自动激活，无需手动启用。
 
 ## 文件结构
 

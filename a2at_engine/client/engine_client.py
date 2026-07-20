@@ -141,6 +141,12 @@ class WorkflowEngineClient:
             logger.info("[EngineClient] Closing httpx client")
             await self._httpx_client.aclose()
 
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()
+
     def update_agent_cards(self, agent_cards: List[Any]):
         self._card_map = {
             card.name: card for card in agent_cards if hasattr(card, "name")

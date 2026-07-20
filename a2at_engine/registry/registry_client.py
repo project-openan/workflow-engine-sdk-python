@@ -28,6 +28,35 @@ from loguru import logger
 from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
 
 
+
+async def load_psop(
+    base_url: str,
+    psop_id: str,
+    access_token: str = None,
+    ssl_verify: bool = True,
+) -> "Workflow":
+    """Fetch a PSOP from the orchestration center external API.
+
+    Uses the public external endpoint GET /api/v1/orchestrate/psop/{psop_id}.
+    Pass access_token when the orchestration center has external auth enabled.
+    Set ssl_verify=False for self-signed certs (dev only).
+    """
+    import httpx
+    from a2at_engine.core.models import Workflow
+    url = f"{base_url}/api/v1/orchestrate/psop/{psop_id}"
+    params = {}
+    if access_token:
+        params["access_token"] = access_token
+    logger.info(f"[Registry] Loading PSOP from {url} (ssl_verify={ssl_verify})")
+    async with httpx.AsyncClient(verify=ssl_verify, timeout=30, follow_redirects=True) as client:
+        resp = await client.get(url, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    wf = Workflow.from_dict(data.get("data", data))
+    logger.info(f"[Registry] Loaded workflow: {wf.name}, {len(wf.steps)} steps")
+    return wf
+
+
 class RegistryClient:
     """Fetches AgentCards from the Registry Center."""
 

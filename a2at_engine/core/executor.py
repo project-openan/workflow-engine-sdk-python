@@ -192,32 +192,7 @@ class WorkflowExecutor:
             )
         return [idx] if idx is not None else []
 
-    @staticmethod
-    async def load_workflow_from_orchestration_center(
-        base_url: str,
-        psop_id: str,
-        access_token: str = None,
-        ssl_verify: bool = True,
-    ) -> Workflow:
-        """Fetch a PSOP from the orchestration center external API.
 
-        Uses the public external endpoint GET /api/v1/orchestrate/psop/{psop_id}.
-        Pass access_token when the orchestration center has external auth enabled.
-        Set ssl_verify=False for self-signed certs (dev only; not for production).
-        """
-        import httpx
-        url = f"{base_url}/api/v1/orchestrate/psop/{psop_id}"
-        params = {}
-        if access_token:
-            params["access_token"] = access_token
-        logger.info(f"[Executor] Loading PSOP from {url} (ssl_verify={ssl_verify})")
-        async with httpx.AsyncClient(verify=ssl_verify, timeout=30, follow_redirects=True) as client:
-            resp = await client.get(url, params=params)
-            resp.raise_for_status()
-            data = resp.json()
-        wf = Workflow.from_dict(data.get("data", data))
-        logger.info(f"[Executor] Loaded workflow: {wf.name}, {len(wf.steps)} steps")
-        return wf
     @property
     def current_step_outputs(self) -> Dict[str, Dict[str, Any]]:
         return self.step_outputs

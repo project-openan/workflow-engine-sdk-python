@@ -73,7 +73,8 @@ async def main():
     )
 
     # 3. Load a workflow from the orchestration center (external API)
-    workflow = await WorkflowExecutor.load_workflow_from_orchestration_center(
+    from a2at_engine import load_psop
+    workflow = await load_psop(
         base_url="http://127.0.0.1:5001",
         psop_id="your-psop-id-here",
         access_token="your-access-token-if-auth-enabled",

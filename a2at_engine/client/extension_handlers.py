@@ -149,10 +149,32 @@ class NotificationTHandler(ExtensionHandler):
     extension_keyword = "Notification-T"
 
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
+        notif_uri = None
+        extensions = getattr(getattr(agent_card, "capabilities", None), "extensions", None) or []
+        for ext in extensions:
+            uri = getattr(ext, "uri", "") or ""
+            if "Notification-T" in uri:
+                notif_uri = uri
+                break
+        if not notif_uri:
+            return metadata
+        if notif_uri in (metadata or {}):
+            logger.info("[Notification-T] Metadata already preset, skipping subscription injection")
+            return metadata
+        metadata = dict(metadata) if metadata else {}
+        metadata[notif_uri] = {"action": "subscribe", "topic": "recovery_result"}
+        logger.info(f"[Notification-T] Injected subscription for '{getattr(agent_card, 'name', '?')}'")
         return metadata
 
     async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
-        notification = result.metadata.get("Notification-T") if result.metadata else None
+        notification = None
+        if result.metadata:
+            notification = result.metadata.get("Notification-T")
+            if not notification:
+                for k, v in result.metadata.items():
+                    if isinstance(k, str) and "Notification-T" in k:
+                        notification = v
+                        break
         if not notification or not control_point:
             return result
         agent_name = getattr(agent_card, "name", "")

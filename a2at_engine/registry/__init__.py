@@ -16,6 +16,6 @@
 #    under the License.
 
 
-from a2at_engine.registry.registry_client import RegistryClient, load_psop
+from a2at_engine.registry.registry_client import RegistryClient, load_psop, search_psop
 
-__all__ = ["RegistryClient", "load_psop"]
+__all__ = ["RegistryClient", "load_psop", "search_psop"]

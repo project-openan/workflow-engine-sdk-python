@@ -57,6 +57,37 @@ async def load_psop(
     return wf
 
 
+async def search_psop(
+    base_url: str,
+    intent: str,
+    top_n: int = 5,
+    access_token: str = None,
+    ssl_verify: bool = True,
+) -> List[dict]:
+    """Search for matching PSOP workflows from the orchestration center.
+
+    Uses the public external endpoint POST /api/v1/orchestrate/search.
+    Returns a list of summary dicts (id, name, description, score, ...).
+    To get the full workflow, take workflow_id from a result and call
+    ``load_psop(base_url, workflow_id, ...)``.
+    """
+    import httpx
+    url = f"{base_url}/api/v1/orchestrate/search"
+    params = {}
+    if access_token:
+        params["access_token"] = access_token
+    body = {"intent": intent, "top_n": top_n}
+    logger.info(f"[Registry] Searching PSOP at {url} (intent={intent[:60]}, top_n={top_n})")
+    async with httpx.AsyncClient(verify=ssl_verify, timeout=30, follow_redirects=True) as client:
+        resp = await client.post(url, json=body, params=params)
+        resp.raise_for_status()
+        data = resp.json()
+    results = data.get("data", [])
+    logger.info(f"[Registry] Search returned {len(results)} workflow(s)")
+    return results
+
+
+
 class RegistryClient:
     """Fetches AgentCards from the Registry Center."""
 

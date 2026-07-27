@@ -44,6 +44,11 @@ from a2at_engine.client.sse_normalization import apply_sse_normalization
 from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
 from a2at_engine.control.control_points import EventCallback
 from a2at_engine.core.models import SendMessageResult
+from a2at_engine.client.extensions import A2ATExtension
+from a2at_engine.client.credential_crypto import decrypt_if_needed as _decrypt_credential
+from a2at_engine.client.env_file_loader import load_to_environ as _load_env_file
+from a2at_engine.client.auth_provider import AuthProvider
+from a2at_engine.control.control_points import EventType
 
 # Apply SSE response normalization once at import time.
 apply_sse_normalization()
@@ -74,7 +79,13 @@ class WorkflowEngineClient:
         ca_certs_path: Optional[str] = None,
         custom_handlers: Optional[List[ExtensionHandler]] = None,
         event_callback: Optional[EventCallback] = None,
+        auth_provider: Optional[AuthProvider] = None,
+        max_negotiation_rounds: int = 3,
+        preferred_protocol: Optional[str] = None,
     ):
+        # Load .env file into os.environ for credential key resolution.
+        if a2at_env_path:
+            _load_env_file(a2at_env_path)
         normalized_cards = self._normalize_cards(agent_cards)
         self._card_map = {
             card.name: card for card in normalized_cards if hasattr(card, "name")
@@ -92,7 +103,14 @@ class WorkflowEngineClient:
         self._context_id = str(uuid.uuid4())
         self._control_point = None
         self._event_callback = event_callback
-        logger.info(f"[EngineClient] Initialized with {len(self._card_map)} agent(s), ssl_verify={ssl_verify}, a2at={self._a2at_client is not None}")
+        self._auth_provider = auth_provider
+        self._max_negotiation_rounds = max_negotiation_rounds
+        self._preferred_protocol = preferred_protocol
+        logger.info(
+            f"[EngineClient] Initialized with {len(self._card_map)} agent(s), "
+            f"ssl_verify={ssl_verify}, a2at={self._a2at_client is not None}, "
+            f"max_neg={max_negotiation_rounds}"
+        )
 
     # ------------------------------------------------------------------
     # Setup helpers
@@ -250,10 +268,155 @@ class WorkflowEngineClient:
             task_state=task_state,
         )
         result = await self._run_after_receive_handlers(agent_card, result)
-        if self._event_callback:
-            self._event_callback.on_event("agent_response", {"agent": agent_name, "response": result.text})
-        return result
+        # Auto-negotiate: if the agent returned INPUT_REQUIRED, loop through
+        # negotiation rounds (calls control_point.on_negotiation). This
+        # mirrors the Java SDK's autoNegotiate integrated into sendMessage.
+        return await self._auto_negotiate(agent_card, agent_name, message, context_id, result, 1)
 
+    # ------------------------------------------------------------------
+    # Auto-negotiation (integrated into send_message)
+    # ------------------------------------------------------------------
+    async def _auto_negotiate(
+        self, agent_card, agent_name, original_message,
+        context_id, result, round_num,
+    ) -> SendMessageResult:
+        """Auto-resolve negotiation rounds within send_message.
+        Mirrors the Java SDK's autoNegotiate. When the agent returns
+        INPUT_REQUIRED, calls ``control_point.on_negotiation`` for a
+        clarification, then resends the follow-up message with the
+        Negotiation-T metadata key. Emits negotiation_request /
+        negotiation_resolved / negotiation_failed events.
+        """
+        if not self._is_negotiation_needed(result) or round_num > self._max_negotiation_rounds:
+            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text})
+            return result
+        neg_meta = result.metadata or {}
+        neg_text = neg_meta.get("negotiation_message", "") or ""
+        logger.info(f"[Negotiation] Round {round_num} for '{agent_name}': {neg_text}")
+        self._emit(EventType.NEGOTIATION_REQUEST, {
+            "agent": agent_name, "round": round_num, "concern": neg_text,
+        })
+        # Ask the control point for a clarification
+        if self._control_point is not None:
+            try:
+                clarification = self._control_point.on_negotiation(agent_name, neg_text, neg_meta)
+                if asyncio.iscoroutine(clarification):
+                    clarification = await clarification
+            except Exception as e:
+                logger.warning(f"[Negotiation] on_negotiation raised: {e}")
+                clarification = None
+        else:
+            clarification = "Please proceed with the original task using available information."
+        if not clarification:
+            self._emit(EventType.NEGOTIATION_FAILED, {
+                "agent": agent_name, "round": round_num, "reason": "no clarification",
+            })
+            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text})
+            return result
+        logger.info(f"[Negotiation] Clarification for '{agent_name}' round {round_num}: {clarification}")
+        self._emit(EventType.NEGOTIATION_RESOLVED, {
+            "agent": agent_name, "round": round_num, "clarification": clarification,
+        })
+        follow_up = (
+            "[NEGOTIATION_RESOLUTION]\n"
+            "The engine has reviewed your negotiation request and provides "
+            "the following clarification:\n\n" + clarification + "\n\n"
+            "---\nOriginal Task:\n" + original_message + "\n\n"
+            "Please re-execute the task based on the clarification above."
+        )
+        # Carry the negotiation resolution as metadata under the
+        # Negotiation-T URI key, per A2A-T protocol.
+        follow_up_meta = {
+            A2ATExtension.NEGOTIATION_T.uri: "## \u6570\u636e\u8fd4\u56de\u786e\u8ba4\n" + clarification + "\n",
+        }
+        follow_up_meta = await self._run_before_send_handlers(agent_card, follow_up, follow_up_meta)
+        ctx = context_id or self._context_id
+        client = self._create_a2a_client(agent_card)
+        send_req = self._build_send_request(follow_up, ctx, follow_up_meta)
+        response_text, last_task, last_meta, task_state = await self._consume_stream(client, send_req)
+        if response_text is None and last_task is not None:
+            response_text = str(last_task)
+        r = SendMessageResult(
+            text=response_text or "", task=last_task,
+            metadata=last_meta, task_state=task_state,
+        )
+        r = await self._run_after_receive_handlers(agent_card, r)
+        return await self._auto_negotiate(agent_card, agent_name, original_message, context_id, r, round_num + 1)
+    # ------------------------------------------------------------------
+    # One-shot extension messages (pre-positioning)
+    # ------------------------------------------------------------------
+    async def send_extension_message(
+        self,
+        agent_name: str,
+        instruction: str,
+        natural_language_input: str,
+        extension: A2ATExtension,
+    ) -> SendMessageResult:
+        """Send a one-shot extension message for pre-positioning.
+        Bypasses Task-T prompt generation and Negotiation-T auto-loop.
+        The metadata value is generated by the A2A-T SDK (LLM + prompt
+        template) from the natural-language input; if the SDK cannot
+        generate, the input text is used as-is.
+        """
+        if not _A2A_AVAILABLE:
+            raise RuntimeError("a2a-sdk not installed")
+        agent_card = self._card_map.get(agent_name)
+        if not agent_card:
+            raise RuntimeError(f"Agent not found: {agent_name}")
+        metadata_value = self.generate_prompt_text(natural_language_input)
+        if not metadata_value:
+            metadata_value = natural_language_input
+            logger.info(f"[EngineClient] SDK prompt generation unavailable for {agent_name}, using input as metadata")
+        logger.info(f"[EngineClient] sendExtensionMessage to {agent_name}: extension={extension.display_name}, metadataValue={len(metadata_value)} chars")
+        metadata = {extension.uri: metadata_value}
+        client = self._create_a2a_client(agent_card)
+        send_req = self._build_send_request(instruction, self._context_id, metadata)
+        response_text, last_task, last_meta, task_state = await self._consume_stream(client, send_req)
+        if response_text is None and last_task is not None:
+            response_text = str(last_task)
+        result = SendMessageResult(
+            text=response_text or "", task=last_task,
+            metadata=last_meta, task_state=task_state,
+        )
+        logger.info(f"[EngineClient] Extension response from {agent_name}: state={result.task_state}")
+        return result
+    async def send_authorization(
+        self, agent_name: str, instruction: str, natural_language_input: str,
+    ) -> SendMessageResult:
+        """Convenience for Authorization-T pre-positioning."""
+        return await self.send_extension_message(
+            agent_name, instruction, natural_language_input, A2ATExtension.AUTHORIZATION_T)
+    async def send_notification(
+        self, agent_name: str, instruction: str, natural_language_input: str,
+    ) -> SendMessageResult:
+        """Convenience for Notification-T pre-positioning."""
+        return await self.send_extension_message(
+            agent_name, instruction, natural_language_input, A2ATExtension.NOTIFICATION_T)
+    def generate_prompt_text(self, natural_language_input: str) -> str:
+        """Generate structured prompt text from natural-language input.
+        Uses the A2A-T SDK's generateTaskPrompt API (LLM + scenario
+        recognition + template rendering). Returns empty string if the
+        SDK is unavailable or generation fails. Mirrors the Java SDK's
+        generatePromptText.
+        """
+        if not self._a2at_client:
+            return ""
+        try:
+            prompt_result = self._a2at_client.generate_task_prompt(natural_language_input)
+            if hasattr(prompt_result, "success") and prompt_result.success:
+                text = getattr(prompt_result, "prompt_text", None)
+                if text:
+                    return text
+            else:
+                failure = getattr(prompt_result, "failure", None)
+                if failure:
+                    logger.warning(
+                        f"[EngineClient] SDK prompt generation failed: "
+                        f"{getattr(failure, 'message', '')}"
+                    )
+        except Exception as e:
+            logger.warning(f"[EngineClient] SDK prompt generation error: {e}")
+        return ""
     async def send_message_with_negotiation(
         self,
         agent_name: str,
@@ -318,9 +481,26 @@ class WorkflowEngineClient:
         return result
 
     def _create_a2a_client(self, agent_card):
+        interfaces = [
+            iface for iface in agent_card.supported_interfaces
+            if iface.protocol_binding
+        ]
+        # Preferred protocol selection: if configured and the agent supports
+        # it, pick that binding first (mirrors Java's selectInterface).
+        if self._preferred_protocol and interfaces:
+            matched = [
+                iface for iface in interfaces
+                if iface.protocol_binding.upper() == self._preferred_protocol.upper()
+            ]
+            if matched:
+                interfaces = matched
+            else:
+                logger.warning(
+                    f"[EngineClient] Preferred protocol {self._preferred_protocol} "
+                    f"not in supportedInterfaces for {agent_card.name}, using first available"
+                )
         protocol_bindings = (
-            [iface.protocol_binding for iface in agent_card.supported_interfaces
-             if iface.protocol_binding]
+            [iface.protocol_binding for iface in interfaces]
             or ["HTTP+JSON", "JSONRPC"]
         )
         streaming = (
@@ -332,6 +512,12 @@ class WorkflowEngineClient:
             streaming=streaming,
         )
         interceptors = self._auth_manager.get_interceptors(agent_card.name)
+        # If a custom AuthProvider is configured, wrap it as an interceptor
+        # so its auth headers are injected on every send.
+        if self._auth_provider is not None:
+            from a2at_engine.client.auth_manager import AuthProviderInterceptor
+            interceptors = list(interceptors) + [AuthProviderInterceptor(
+                self._auth_provider, agent_card.name)]
         logger.info(f"[EngineClient] Created A2A client for {agent_card.name}: protocol={protocol_bindings}, streaming={streaming}, interceptors={len(interceptors)}")
         return ClientFactory(config).create(agent_card, interceptors=interceptors)
 
@@ -345,7 +531,14 @@ class WorkflowEngineClient:
         return SendMessageRequest(message=request_msg)
 
     async def _consume_stream(self, client, send_req):
-        """Iterate over streaming responses, extract text/task/state/metadata."""
+        """Iterate over streaming responses, extract text/task/state/metadata.
+
+        Also forwards intermediate events (status updates, artifact updates,
+        message events) through the EventCallback, mirroring the Java SDK's
+        forwardIntermediateEvent. Merges task-level AND artifact-level
+        metadata into the result so extension payloads on artifacts reach
+        the extension handlers.
+        """
         response_text = None
         last_task_result = None
         last_metadata_dict: Dict[str, Any] = {}
@@ -357,20 +550,63 @@ class WorkflowEngineClient:
 
             if has_task:
                 task = response.task
-                logger.info(f"[EngineClient] Received StreamResponse with task: state={task.status.state if task.status else None}")
+                state = self._extract_task_state(task)
+                logger.info(f"[EngineClient] Received StreamResponse with task: state={state or None}")
                 last_task_result = task
                 response_text = self._extract_task_text(task, response_text)
-                task_state = self._extract_task_state(task) or task_state
-                last_metadata_dict = self._extract_task_metadata(task)
+                task_state = state or task_state
+                last_metadata_dict = self._merge_task_metadata(task, last_metadata_dict)
                 if response_text is None:
                     response_text = self._text_from_metadata(last_metadata_dict)
+                # Forward intermediate agent status update event
+                self._emit(EventType.AGENT_STATUS_UPDATE, {
+                    "agent": getattr(task, "name", "") or "",
+                    "state": task_state,
+                    "text": response_text or "",
+                })
             elif has_message:
                 logger.info(f"[EngineClient] Received StreamResponse with message")
-                response_text = self._extract_message_text(
-                    response.message, response_text,
-                )
+                msg_text = self._extract_message_text(response.message, None)
+                response_text = self._extract_message_text(response.message, response_text)
+                # Forward intermediate agent message event
+                self._emit(EventType.AGENT_MESSAGE_EVENT, {
+                    "agent": "",
+                    "text": msg_text or "",
+                })
 
         return response_text, last_task_result, last_metadata_dict, task_state
+
+    @staticmethod
+    def _merge_task_metadata(task, current: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge task-level AND each artifact's metadata into the result map.
+
+        Agents attach Authorization-T / Notification-T to artifact metadata,
+        so without this merge those extension payloads never reach the
+        extension handlers. Mirrors the Java SDK's mergeTaskMetadata.
+        """
+        result = dict(current) if current else {}
+        md = task.metadata
+        if md:
+            if isinstance(md, dict):
+                result.update(md)
+            else:
+                try:
+                    result.update(MessageToDict(md, preserving_proto_field_name=True))
+                except Exception:
+                    pass
+        artifacts = task.artifacts if hasattr(task, "artifacts") else None
+        if artifacts:
+            for artifact in artifacts:
+                am = getattr(artifact, "metadata", None)
+                if am:
+                    if isinstance(am, dict):
+                        result.update(am)
+                    else:
+                        try:
+                            result.update(MessageToDict(am, preserving_proto_field_name=True))
+                        except Exception:
+                            pass
+        return result
 
     @staticmethod
     def _extract_task_text(task, current_text: Optional[str]) -> Optional[str]:

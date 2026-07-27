@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a2at-engine"
-version = "0.3.0"
+version = "0.4.0"
 description = "Standalone workflow execution SDK for A2A-T multi-agent orchestration"
 readme = "README_en.md"
 license = "Apache-2.0"
@@ -17,6 +17,7 @@ dependencies = [
     "loguru>=0.7.0",
     "protobuf>=4.25.0",
     "packaging>=23.0",
+    "cryptography>=42.0.0",
 ]
 
 [project.urls]

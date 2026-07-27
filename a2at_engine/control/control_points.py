@@ -69,6 +69,9 @@ class EventType:
     # Agent traffic (WorkflowEngineClient)
     AGENT_REQUEST = "agent_request"
     AGENT_RESPONSE = "agent_response"
+    AGENT_STATUS_UPDATE = "agent_status_update"
+    AGENT_ARTIFACT_UPDATE = "agent_artifact_update"
+    AGENT_MESSAGE_EVENT = "agent_message_event"
 
     # A2A-T extensions (negotiation / authorization / notification)
     NEGOTIATION_REQUEST = "negotiation_request"
@@ -103,6 +106,19 @@ class ControlPoint(ABC):
         """
         ...
 
+    async def on_self_task(self, request: TaskRequest) -> TaskResponse:
+        """Handle a self-loop task locally, WITHOUT sending an A2A-T message.
+
+        Called when a workflow step is marked ``SELF_LOOP``: the agent
+        executing the workflow processes the task itself. No
+        ``engine_client`` is passed on purpose: self-loop tasks must not
+        send A2A-T messages. Override to handle local aggregation, merge,
+        or any business logic the workflow-executing agent owns.
+
+        Default: echoes the task message back as the output.
+        """
+        return TaskResponse(success=True, output=request.message)
+
     @abstractmethod
     async def on_route(self, step_name: str, results: Dict[str, Any],
                        conditions: List[JumpCondition]) -> RouteDecision:
@@ -130,6 +146,19 @@ class ControlPoint(ABC):
         Only invoked when the Notification-T handler is registered.
         """
         return None
+
+    async def on_negotiation(self, agent_name: str, negotiation_text: str,
+                             receive_result: Dict[str, Any]) -> str:
+        """Provide supplementary data when an agent returns INPUT_REQUIRED.
+
+        Return the clarification text -- the SDK internally resends the
+        follow-up message. Do NOT send messages here. The engine's
+        ``send_message`` auto-negotiation loop calls this method when an
+        agent returns INPUT_REQUIRED.
+
+        Default: returns a generic clarification.
+        """
+        return "Please proceed with the original task using available information."
 
 
 class EventCallback:

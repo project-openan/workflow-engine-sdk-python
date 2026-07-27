@@ -18,8 +18,11 @@
 """Extension handler registry for A2A-T extensions (SDK-internal).
 
 Built-in handlers: Task-T, Negotiation-T.
-Future: Authorization-T, Notification-T (when A2A-T SDK adds support).
-Handlers that involve user decisions delegate to ControlPoint methods.
+Authorization-T and Notification-T are pre-positioning operations done
+once before the workflow starts (see
+``WorkflowEngineClient.send_extension_message``), so they are NOT part of
+the workflow's extension handler chain. The handler classes are retained
+for backward compatibility and manual registration.
 """
 
 from abc import ABC, abstractmethod
@@ -94,23 +97,53 @@ class NegotiationTHandler(ExtensionHandler):
     async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
         if not a2at_client:
             return result
-        if result.task_state != "INPUT_REQUIRED":
+        if not result.task_state or "INPUT_REQUIRED" not in result.task_state:
             return result
         extensions = getattr(getattr(agent_card, "capabilities", None), "extensions", None) or []
         supports_neg = any("NEGOTIATION-T" in (getattr(ext, "uri", "") or "") for ext in extensions)
         if not supports_neg:
             return result
-        metadata = result.metadata or {}
+        metadata = dict(result.metadata) if result.metadata else {}
+        context_map = self._extract_negotiation_context(metadata)
+        if context_map is None:
+            context_map = metadata
         try:
-            receive_result = a2at_client.receive_negotiation(message=result.text, context=metadata)
-            need_response = receive_result.get("needResponse", False)
-            if need_response:
+            receive_result = a2at_client.receive_negotiation(message=result.text, context=context_map)
+            if receive_result.get("needResponse", False):
                 result.metadata["negotiation_message"] = receive_result.get("message", "")
                 result.metadata["negotiation_context"] = receive_result
-                logger.info(f"[Negotiation-T] Agent '{getattr(agent_card, 'name', '?')}' requested negotiation")
+                logger.info(f"[Negotiation-T] Agent '{getattr(agent_card, 'name', '?')}' requested negotiation: {result.metadata['negotiation_message']}")
         except Exception as e:
-            logger.warning(f"[Negotiation-T] Failed: {e}")
+            msg = str(e) if e else ""
+            if "Unsupported negotiation type" in msg:
+                logger.debug(f"[Negotiation-T] SDK receiveNegotiation unavailable for '{getattr(agent_card, 'name', '?')}' ({msg}), using fallback")
+            else:
+                logger.warning(f"[Negotiation-T] receiveNegotiation failed for '{getattr(agent_card, 'name', '?')}': {msg}, using fallback")
+            fallback_text = self._extract_negotiation_text(metadata)
+            if fallback_text:
+                result.metadata["negotiation_message"] = fallback_text
+                logger.info(f"[Negotiation-T] Agent '{getattr(agent_card, 'name', '?')}' requested negotiation (fallback): {fallback_text}")
+        result.metadata = metadata
         return result
+
+    @staticmethod
+    def _extract_negotiation_context(metadata):
+        if not metadata:
+            return None
+        for key, value in metadata.items():
+            if "DATA-NEGOTIATION-T" in str(key) and isinstance(value, dict):
+                return value
+        return None
+
+    @staticmethod
+    def _extract_negotiation_text(metadata):
+        if not metadata:
+            return None
+        for key, value in metadata.items():
+            key_str = str(key)
+            if "NEGOTIATION-T" in key_str and "DATA-NEGOTIATION-T" not in key_str and isinstance(value, str):
+                return value
+        return None
 
 
 class AuthorizationTHandler(ExtensionHandler):
@@ -193,8 +226,6 @@ class ExtensionRegistry:
         self._handlers: Dict[str, ExtensionHandler] = {}
         self.register(TaskTHandler())
         self.register(NegotiationTHandler())
-        self.register(AuthorizationTHandler())
-        self.register(NotificationTHandler())
 
     def register(self, handler: ExtensionHandler):
         self._handlers[handler.extension_keyword] = handler

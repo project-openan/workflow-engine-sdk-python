@@ -24,6 +24,11 @@ from a2at_engine.client.extension_handlers import (
 )
 from a2at_engine.client.ssl_context import create_ssl_context
 from a2at_engine.client.credential_service import AgentCredentialService, AgentAuthManager, CustomAuthInterceptor
+from a2at_engine.client.extensions import A2ATExtension
+from a2at_engine.client.credential_crypto import encrypt, decrypt_if_needed
+from a2at_engine.client.env_file_loader import load_to_environ
+from a2at_engine.client.auth_provider import AuthProvider
+from a2at_engine.client.auth_manager import AuthProviderInterceptor
 from a2at_engine.client.extension_interceptor import ExtensionInterceptor
 from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
 
@@ -33,4 +38,6 @@ __all__ = [
     "AuthorizationTHandler", "NotificationTHandler", "ExtensionRegistry",
     "create_ssl_context", "AgentCredentialService", "AgentAuthManager",
     "CustomAuthInterceptor", "ExtensionInterceptor", "normalize_agent_dict",
+    "A2ATExtension", "encrypt", "decrypt_if_needed", "load_to_environ",
+    "AuthProvider", "AuthProviderInterceptor",
 ]

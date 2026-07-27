@@ -49,6 +49,10 @@ class WorkflowExecutor:
         self.control_point = control_point
         self.engine_client = engine_client
         self.engine_client.set_control_point(control_point)
+        try:
+            self.engine_client.set_event_callback(event_callback)
+        except Exception:
+            pass
         self.event_callback = event_callback
         self.lang = lang
         self.context_builder = ContextBuilder(workflow, runtime_intent)
@@ -64,45 +68,37 @@ class WorkflowExecutor:
                 logger.warning(f"Event callback error: {e}")
 
     async def run(self) -> ExecutionResult:
+        """Execute the workflow DAG with parallel step dispatch.
+
+        Mirrors Java's executeSteps: collects all ready steps (predecessors
+        satisfied), dispatches them concurrently via asyncio.gather, then
+        processes their next-step indices. Steps at the same layer run in
+        parallel; subtasks within a step also run in parallel.
+        """
         logger.info(f"[Executor] Starting workflow: {self.workflow.name} ({len(self.workflow.steps)} steps)")
         pending = deque([
             i for i, s in enumerate(self.workflow.steps)
             if s.layer == 0 and not self.context_builder.get_step_predecessors(s.name)
         ])
-        executed = set()
+        executed: set = set()
         defer_count: Dict[int, int] = {}
         failed = False
         try:
-            while pending:
-                idx = pending.popleft()
-                if idx >= len(self.workflow.steps) or idx in executed:
-                    continue
-                step = self.workflow.steps[idx]
-                predecessors = self.context_builder.get_step_predecessors(step.name)
-                if not all(p in self.step_outputs for p in predecessors):
-                    dc = defer_count.get(idx, 0) + 1
-                    if dc > len(self.workflow.steps):
-                        executed.add(idx)
-                        continue
-                    defer_count[idx] = dc
+            while pending and not failed:
+                ready, deferred = self._collect_ready(pending, executed, defer_count)
+                for idx in deferred:
                     pending.append(idx)
-                    await asyncio.sleep(0.05)
-                    continue
-                executed.add(idx)
-                logger.info(f"--- Executing step: {step.name} ---")
-                self._emit_event("step_start", {"step": step.name})
-                step_result, success = await self._execute_subtasks(step)
-                self.step_outputs[step.name] = step_result
-                if not success:
-                    logger.error(f"Step {step.name} failed, stopping.")
-                    self._emit_event("error", {"step": step.name, "results": step_result})
-                    failed = True
+                if not ready:
+                    if deferred:
+                        await asyncio.sleep(0.05)
+                        continue
                     break
-                self._emit_event("step_complete", {"step": step.name, "results": step_result})
-                next_indices = await self._determine_next_steps(step, step_result)
-                for nxt in reversed(next_indices):
-                    if nxt not in executed and nxt not in pending:
-                        pending.insert(0, nxt)
+                executed.update(ready)
+                results = await asyncio.gather(
+                    *[self._execute_step(idx) for idx in ready],
+                    return_exceptions=True,
+                )
+                failed = self._process_results(ready, results, pending, executed)
         except Exception as e:
             logger.critical(f"DAG traversal error: {e}", exc_info=True)
             return ExecutionResult(success=False, history=self.execution_history,
@@ -112,6 +108,64 @@ class WorkflowExecutor:
         return ExecutionResult(success=not failed, history=self.execution_history,
                                step_outputs=self.step_outputs,
                                error=("Step execution failed" if failed else None))
+
+    def _collect_ready(self, pending: deque, executed: set,
+                       defer_count: Dict[int, int]) -> tuple:
+        """Drain pending into ready (predecessors satisfied) and deferred."""
+        ready: List[int] = []
+        deferred: List[int] = []
+        while pending:
+            idx = pending.popleft()
+            if idx >= len(self.workflow.steps) or idx in executed:
+                continue
+            step = self.workflow.steps[idx]
+            predecessors = self.context_builder.get_step_predecessors(step.name)
+            if all(p in self.step_outputs for p in predecessors):
+                ready.append(idx)
+            else:
+                dc = defer_count.get(idx, 0) + 1
+                if dc > len(self.workflow.steps):
+                    executed.add(idx)
+                    continue
+                defer_count[idx] = dc
+                deferred.append(idx)
+        return ready, deferred
+
+    async def _execute_step(self, idx: int) -> tuple:
+        """Execute one step: subtasks + next-step determination.
+
+        Returns (step_name, step_result, success, next_indices).
+        """
+        step = self.workflow.steps[idx]
+        logger.info(f"--- Executing step: {step.name} ---")
+        self._emit_event("step_start", {"step": step.name})
+        step_result, success = await self._execute_subtasks(step)
+        self.step_outputs[step.name] = step_result
+        next_indices: List[int] = []
+        if success:
+            self._emit_event("step_complete", {"step": step.name, "results": step_result})
+            next_indices = await self._determine_next_steps(step, step_result)
+        else:
+            logger.error(f"Step {step.name} failed, stopping.")
+            self._emit_event("error", {"step": step.name, "results": step_result})
+        return step.name, step_result, success, next_indices
+
+    def _process_results(self, ready: List[int], results: list,
+                         pending: deque, executed: set) -> bool:
+        """Process asyncio.gather results, enqueue next steps. Returns failed."""
+        for idx, result in zip(ready, results):
+            if isinstance(result, Exception):
+                step = self.workflow.steps[idx]
+                logger.error(f"Step {step.name} raised: {result}")
+                self._emit_event("error", {"step": step.name, "error": str(result)})
+                return True
+            _, _, success, next_indices = result
+            if not success:
+                return True
+            for nxt in reversed(next_indices):
+                if nxt not in executed and nxt not in pending:
+                    pending.appendleft(nxt)
+        return False
 
     async def _execute_subtasks(self, step: WorkflowStep) -> tuple[Dict[str, Any], bool]:
         context_message = self.context_builder.build_context(step, self.step_outputs)
@@ -126,7 +180,13 @@ class WorkflowExecutor:
             self._emit_event("task_request", {"step": step.name, "agent": task.agent, "task": task.description})
             logger.info(f"[Executor] Dispatching task to agent {task.agent}: {task.description[:80]}")
             try:
-                response = await self.control_point.on_task(request, self.engine_client)
+                # SELF_LOOP steps are handled locally without sending an
+                # A2A-T message (mirrors Java dispatchTask SELF_LOOP branch).
+                if step.step_type == StepType.SELF_LOOP:
+                    logger.info(f"[Executor] Self-loop task: step={step.name}, agent={task.agent} (local, no A2A-T)")
+                    response = await self.control_point.on_self_task(request)
+                else:
+                    response = await self.control_point.on_task(request, self.engine_client)
                 task.status = TaskStatus.SUCCESS if response.success else TaskStatus.FAILED
                 self._emit_event("task_status_changed", {"step": step.name, "subtask_index": subtask_index, "agent": task.agent, "status": task.status.value})
                 status = "success" if response.success else "failed"
@@ -180,7 +240,15 @@ class WorkflowExecutor:
                     indices.append(idx)
             return indices
         # Has conditional branches -> user decides via on_route.
-        decision = await self.control_point.on_route(step.name, step_result, step.next)
+        # Build route context: merge context_from upstream results + current
+        # step results (mirrors Java's determineNextSteps routeContext).
+        route_context: Dict[str, Any] = {}
+        if step.context_from:
+            for ref in step.context_from:
+                if ref in self.step_outputs:
+                    route_context[ref] = self.step_outputs[ref]
+        route_context[step.name] = step_result
+        decision = await self.control_point.on_route(step.name, route_context, step.next)
         logger.info(f"Route for '{step.name}': {decision.next_step} ({decision.reason})")
         self._emit_event("route_decision", {"step": step.name, "next": decision.next_step, "reason": decision.reason})
         idx = self.context_builder.find_step_index(decision.next_step)

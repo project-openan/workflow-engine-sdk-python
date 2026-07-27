@@ -20,6 +20,7 @@ from a2at_engine.core.models import (
     Workflow, WorkflowStep, Task, JumpCondition,
     StepType, TaskStatus, ExecutionResult,
     SendMessageResult, TaskRequest, TaskResponse, RouteDecision,
+    WorkflowSearchResult,
 )
 from a2at_engine.core.context_builder import ContextBuilder
 from a2at_engine.core.executor import WorkflowExecutor
@@ -28,5 +29,6 @@ __all__ = [
     "Workflow", "WorkflowStep", "Task", "JumpCondition",
     "StepType", "TaskStatus", "ExecutionResult",
     "SendMessageResult", "TaskRequest", "TaskResponse", "RouteDecision",
+    "WorkflowSearchResult",
     "ContextBuilder", "WorkflowExecutor",
 ]

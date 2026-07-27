@@ -25,6 +25,7 @@ from typing import List, Optional, Dict, Any
 class StepType(Enum):
     ALL_SUCCESS = "AllSuccess"
     ANY_SUCCESS = "AnySuccess"
+    SELF_LOOP = "SelfLoop"
 
     @classmethod
     def from_value(cls, value: Any) -> "StepType":
@@ -45,8 +46,44 @@ class StepType(Enum):
 
 class TaskStatus(Enum):
     PENDING = "pending"
+    RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
+
+
+@dataclass
+class WorkflowSearchResult:
+    """Summary of a PSOP workflow returned by the search endpoint.
+
+    Mirrors the Java SDK's WorkflowSearchResult. Returned by
+    ``search_psop()``. To get the full workflow with steps, take
+    ``workflow_id`` and call ``load_psop()``.
+    """
+    workflow_id: str = ""
+    workflow_type: str = ""
+    name: str = ""
+    description: str = ""
+    tags: List[str] = field(default_factory=list)
+    created_at: str = ""
+    score: float = 1.0
+    user_intent: str = ""
+    related_preflow: str = ""
+    tasks_summary: str = ""
+
+    @classmethod
+    def from_dict(cls, data: Dict[str, Any]) -> "WorkflowSearchResult":
+        return cls(
+            workflow_id=data.get("workflow_id", data.get("id", "")),
+            workflow_type=data.get("workflow_type", ""),
+            name=data.get("name", ""),
+            description=data.get("description", ""),
+            tags=data.get("tags", []),
+            created_at=str(data["created_at"]) if data.get("created_at") else "",
+            score=float(data["score"]) if isinstance(data.get("score"), (int, float)) else 1.0,
+            user_intent=data.get("user_intent", ""),
+            related_preflow=data.get("related_preflow", ""),
+            tasks_summary=data.get("tasks_summary", ""),
+        )
 
 
 @dataclass

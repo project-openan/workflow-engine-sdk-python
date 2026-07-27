@@ -50,12 +50,14 @@ from a2at_engine.core import (
     Workflow, WorkflowStep, Task, JumpCondition,
     StepType, TaskStatus, ExecutionResult,
     SendMessageResult, TaskRequest, TaskResponse, RouteDecision,
+    WorkflowSearchResult,
     ContextBuilder, WorkflowExecutor,
 )
 from a2at_engine.client import (
     WorkflowEngineClient, AuthManager,
     ExtensionHandler, TaskTHandler, NegotiationTHandler,
     AuthorizationTHandler, NotificationTHandler, ExtensionRegistry,
+    A2ATExtension, AuthProvider,
     create_ssl_context, normalize_agent_dict,
 )
 from a2at_engine.control import ControlPoint, EventCallback, EventType
@@ -67,11 +69,13 @@ __all__ = [
     "Workflow", "WorkflowStep", "Task", "JumpCondition",
     "StepType", "TaskStatus", "ExecutionResult",
     "SendMessageResult", "TaskRequest", "TaskResponse", "RouteDecision",
+    "WorkflowSearchResult",
     "ContextBuilder", "WorkflowExecutor",
     # Client
     "WorkflowEngineClient", "AuthManager",
     "ExtensionHandler", "TaskTHandler", "NegotiationTHandler",
     "AuthorizationTHandler", "NotificationTHandler", "ExtensionRegistry",
+    "A2ATExtension", "AuthProvider",
     "create_ssl_context", "normalize_agent_dict",
     # Control (user implements)
     "ControlPoint", "EventCallback", "EventType",
@@ -81,4 +85,4 @@ __all__ = [
     "execute_psop",
 ]
 
-__version__ = "0.3.0"
+__version__ = "0.4.0"

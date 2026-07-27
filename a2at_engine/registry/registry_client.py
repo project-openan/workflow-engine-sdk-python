@@ -63,15 +63,17 @@ async def search_psop(
     top_n: int = 5,
     access_token: str = None,
     ssl_verify: bool = True,
-) -> List[dict]:
+) -> List["WorkflowSearchResult"]:
     """Search for matching PSOP workflows from the orchestration center.
 
     Uses the public external endpoint POST /api/v1/orchestrate/search.
-    Returns a list of summary dicts (id, name, description, score, ...).
-    To get the full workflow, take workflow_id from a result and call
-    ``load_psop(base_url, workflow_id, ...)``.
+    Returns a list of WorkflowSearchResult summary objects. To get the full
+    workflow with steps, take ``workflow_id`` from a result and call
+    ``load_psop(base_url, workflow_id, ...)``. Mirrors the Java SDK's
+    LoadPsop.search which returns WorkflowSearchResult.
     """
     import httpx
+    from a2at_engine.core.models import WorkflowSearchResult
     url = f"{base_url}/api/v1/orchestrate/search"
     params = {}
     if access_token:
@@ -82,7 +84,8 @@ async def search_psop(
         resp = await client.post(url, json=body, params=params)
         resp.raise_for_status()
         data = resp.json()
-    results = data.get("data", [])
+    raw_results = data.get("data", [])
+    results = [WorkflowSearchResult.from_dict(r) for r in raw_results]
     logger.info(f"[Registry] Search returned {len(results)} workflow(s)")
     return results
 
@@ -148,6 +151,26 @@ class RegistryClient:
             except ImportError:
                 logger.info(f"[Registry] a2a-sdk not available, returning raw dict")
                 return raw
+
+    async def register_agent_card(self, agent_card) -> dict:
+        """Register or update an AgentCard in the registry.
+
+        POSTs to /rest/v1/registry-center/agent-cards with the card wrapped
+        in an ``agentCards`` list. Mirrors the Java SDK's
+        RegistryClient.registerAgentCard.
+        """
+        import httpx
+        url = f"{self.url}/rest/v1/registry-center/agent-cards"
+        payload = {"agentCards": [agent_card]}
+        logger.info(f"[Registry] Registering agent card: name={agent_card.get('name') if isinstance(agent_card, dict) else getattr(agent_card, 'name', '?')}")
+        async with httpx.AsyncClient(verify=self.ssl_verify, timeout=30) as client:
+            resp = await client.post(url, json=payload)
+            result = resp.json()
+            if resp.status_code in (200, 201):
+                logger.info(f"[Registry] Agent card registered")
+            else:
+                logger.warning(f"[Registry] Registration returned {resp.status_code}: {resp.text}")
+            return result
 
     @property
     def base_url(self) -> str:

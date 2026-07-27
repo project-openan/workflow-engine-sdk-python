@@ -22,13 +22,19 @@ from loguru import logger
 
 try:
     from a2a.client.auth import AuthInterceptor
+    from a2a.client.interceptors import ClientCallInterceptor, BeforeArgs, AfterArgs
     _A2A_AUTH_AVAILABLE = True
 except ImportError:
     _A2A_AUTH_AVAILABLE = False
     AuthInterceptor = None
+    ClientCallInterceptor = None
+    BeforeArgs = None
+    AfterArgs = None
+
 
 from a2at_engine.client.credential_service import AgentAuthManager, CustomAuthInterceptor
 from a2at_engine.client.extension_interceptor import ExtensionInterceptor
+from a2at_engine.client.auth_provider import AuthProvider
 
 
 class AuthManager:
@@ -90,3 +96,32 @@ class AuthManager:
     def set_httpx_client(self, client):
         if self._auth_manager:
             self._auth_manager.set_httpx_client(client)
+class AuthProviderInterceptor(ClientCallInterceptor if _A2A_AUTH_AVAILABLE else object):
+    """Wraps a custom AuthProvider as an a2a-sdk ClientCallInterceptor.
+
+    Calls ``auth_provider.apply_auth(agent_name, agent_card, headers)`` on
+    every ``before`` to inject auth headers. Mirrors the Java SDK's
+    ``AuthProvider.applyAuth`` being called in buildClientCallContext.
+    """
+    def __init__(self, auth_provider: AuthProvider, agent_name: str):
+        self._auth_provider = auth_provider
+        self._agent_name = agent_name
+
+    async def before(self, args: "BeforeArgs") -> None:
+        agent_card = args.agent_card
+        headers: Dict[str, str] = {}
+        try:
+            self._auth_provider.apply_auth(self._agent_name, agent_card, headers)
+        except Exception as e:
+            logger.warning(f"[AuthProvider] apply_auth raised: {e}")
+        if args.context is None:
+            from a2a.client.client import ClientCallContext
+            args.context = ClientCallContext()
+        if args.context.service_parameters is None:
+            args.context.service_parameters = {}
+        args.context.service_parameters.update(headers)
+        if headers:
+            logger.info(f"[AuthProvider] Injected {len(headers)} header(s) for {self._agent_name}")
+
+    async def after(self, args: "AfterArgs") -> None:
+        pass

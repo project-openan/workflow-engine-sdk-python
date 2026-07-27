@@ -61,6 +61,7 @@ from a2at_engine.client import (
     create_ssl_context, normalize_agent_dict,
 )
 from a2at_engine.control import ControlPoint, EventCallback, EventType
+from a2at_engine.control import NegotiationStrategy, DefaultControlPoint
 from a2at_engine.registry import RegistryClient, load_psop, search_psop
 from a2at_engine.runner import execute_psop
 
@@ -79,6 +80,7 @@ __all__ = [
     "create_ssl_context", "normalize_agent_dict",
     # Control (user implements)
     "ControlPoint", "EventCallback", "EventType",
+    "NegotiationStrategy", "DefaultControlPoint",
     # Registry (optional)
     "RegistryClient", "load_psop", "search_psop",
     # High-level runner

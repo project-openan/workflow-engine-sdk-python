@@ -28,6 +28,8 @@ from typing import Dict, Optional
 import httpx
 from loguru import logger
 
+from a2at_engine.client.credential_crypto import decrypt_if_needed
+
 try:
     from a2a.client.auth import CredentialService
     from a2a.client.auth import InMemoryContextCredentialStore
@@ -90,10 +92,11 @@ class AgentCredentialService(CredentialService if _A2A_AVAILABLE else object):
         token_field = scheme_cfg.get("token_field", "accessSession")
         request_fields = scheme_cfg.get("request_fields")
         if request_fields and isinstance(request_fields, dict):
-            body = dict(request_fields)
+            body = {k: decrypt_if_needed(v) if isinstance(v, str) else v
+                    for k, v in request_fields.items()}
         else:
             username = scheme_cfg.get("username")
-            password = scheme_cfg.get("password")
+            password = decrypt_if_needed(scheme_cfg.get("password"))
             if not username or not password:
                 return None
             body = {scheme_cfg.get("username_field","username"): username, scheme_cfg.get("password_field","password"): password}

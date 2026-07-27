@@ -363,10 +363,14 @@ class WorkflowEngineClient:
         agent_card = self._card_map.get(agent_name)
         if not agent_card:
             raise RuntimeError(f"Agent not found: {agent_name}")
-        metadata_value = self.generate_prompt_text(natural_language_input)
+        # Each A2A-T extension type has its own prompt generation method on
+        # the SDK. When the SDK does not yet support a given extension's
+        # prompt generation, the method returns "" and we fall back to the
+        # natural-language input as-is.
+        metadata_value = self._generate_extension_prompt(extension, natural_language_input)
         if not metadata_value:
             metadata_value = natural_language_input
-            logger.info(f"[EngineClient] SDK prompt generation unavailable for {agent_name}, using input as metadata")
+            logger.info(f"[EngineClient] SDK prompt generation unavailable for {agent_name} ({extension.display_name}), using input as metadata")
         logger.info(f"[EngineClient] sendExtensionMessage to {agent_name}: extension={extension.display_name}, metadataValue={len(metadata_value)} chars")
         metadata = {extension.uri: metadata_value}
         client = self._create_a2a_client(agent_card)
@@ -392,31 +396,59 @@ class WorkflowEngineClient:
         """Convenience for Notification-T pre-positioning."""
         return await self.send_extension_message(
             agent_name, instruction, natural_language_input, A2ATExtension.NOTIFICATION_T)
+    def _generate_extension_prompt(self, extension, natural_language_input):
+        """Dispatch to the SDK extension-specific prompt generation."""
+        if extension == A2ATExtension.TASK_T:
+            return self.generate_prompt_text(natural_language_input)
+        if extension == A2ATExtension.NEGOTIATION_T:
+            return self.generate_negotiation_prompt(natural_language_input)
+        if extension == A2ATExtension.AUTHORIZATION_T:
+            return self.generate_authorization_prompt(natural_language_input)
+        if extension == A2ATExtension.NOTIFICATION_T:
+            return self.generate_notification_prompt(natural_language_input)
+        return ''
+
     def generate_prompt_text(self, natural_language_input: str) -> str:
-        """Generate structured prompt text from natural-language input.
-        Uses the A2A-T SDK's generateTaskPrompt API (LLM + scenario
-        recognition + template rendering). Returns empty string if the
-        SDK is unavailable or generation fails. Mirrors the Java SDK's
-        generatePromptText.
-        """
+        """Generate structured Task-T prompt text from natural-language input."""
         if not self._a2at_client:
-            return ""
+            return ''
         try:
             prompt_result = self._a2at_client.generate_task_prompt(natural_language_input)
-            if hasattr(prompt_result, "success") and prompt_result.success:
-                text = getattr(prompt_result, "prompt_text", None)
+            if hasattr(prompt_result, 'success') and prompt_result.success:
+                text = getattr(prompt_result, 'prompt_text', None)
                 if text:
                     return text
             else:
-                failure = getattr(prompt_result, "failure", None)
+                failure = getattr(prompt_result, 'failure', None)
                 if failure:
-                    logger.warning(
-                        f"[EngineClient] SDK prompt generation failed: "
-                        f"{getattr(failure, 'message', '')}"
-                    )
+                    logger.warning('[EngineClient] SDK Task-T prompt generation failed: ' + str(getattr(failure, 'message', '')))
         except Exception as e:
-            logger.warning(f"[EngineClient] SDK prompt generation error: {e}")
-        return ""
+            logger.warning('[EngineClient] SDK Task-T prompt generation error: ' + str(e))
+        return ''
+
+    def generate_negotiation_prompt(self, natural_language_input: str) -> str:
+        """Generate Negotiation-T prompt text. Reserved for SDK support."""
+        if not self._a2at_client:
+            return ''
+        # TODO: call self._a2at_client.generate_negotiation_prompt(...) when SDK exposes it.
+        # The SDK ships negotiation prompt templates (fulfillment/clarification/
+        # feasibility/information) but NegotiationPromptRenderer is currently passthrough.
+        return ''
+
+    def generate_authorization_prompt(self, natural_language_input: str) -> str:
+        """Generate Authorization-T prompt text. Reserved for SDK support."""
+        if not self._a2at_client:
+            return ''
+        # TODO: call self._a2at_client.generate_authorization_prompt(...) when SDK exposes it.
+        return ''
+
+    def generate_notification_prompt(self, natural_language_input: str) -> str:
+        """Generate Notification-T prompt text. Reserved for SDK support."""
+        if not self._a2at_client:
+            return ''
+        # TODO: call self._a2at_client.generate_notification_prompt(...) when SDK exposes it.
+        return ''
+
     async def send_message_with_negotiation(
         self,
         agent_name: str,

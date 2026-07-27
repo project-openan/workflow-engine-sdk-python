@@ -157,7 +157,68 @@ class ControlPoint(ABC):
         agent returns INPUT_REQUIRED.
 
         Default: returns a generic clarification.
-        """
+       """
+        return "Please proceed with the original task using available information."
+
+
+class NegotiationStrategy(ABC):
+    """Strategy for generating negotiation clarifications.
+
+    Single responsibility: when an agent returns INPUT_REQUIRED
+    (Negotiation-T), produce the clarification text to send back. This is a
+    separate concern from workflow orchestration (task dispatch, routing).
+    Users who need custom negotiation logic (LLM-based clarification, DAG-
+    predecessor forwarding, etc.) implement this interface and inject it
+    into DefaultControlPoint rather than mixing negotiation policy into
+    their ControlPoint class.
+    """
+
+    @abstractmethod
+    async def resolve(self, agent_name: str, negotiation_text: str,
+                      receive_result: Dict[str, Any]) -> str:
+        """Generate a clarification for the given negotiation request."""
+        ...
+
+
+class DefaultControlPoint(ControlPoint):
+    """Default ControlPoint with single-responsibility methods.
+
+    Negotiation-T auto-loop delegates to an injected NegotiationStrategy
+    (or returns a generic clarification if none is provided). Override
+    on_negotiation directly when a full strategy object is overkill.
+    """
+
+    def __init__(self, negotiation_strategy: Optional["NegotiationStrategy"] = None):
+        self._negotiation_strategy = negotiation_strategy
+
+    async def on_task(self, request: TaskRequest, engine_client: "WorkflowEngineClient") -> TaskResponse:
+        result = await engine_client.send_message(request.agent_name, request.message)
+        success = bool(result.text)
+        return TaskResponse(success=success, output=result.text)
+
+    async def on_self_task(self, request: TaskRequest) -> TaskResponse:
+        return TaskResponse(success=True, output=request.message)
+
+    async def on_route(self, step_name: str, results: Dict[str, Any],
+                       conditions: List[JumpCondition]) -> RouteDecision:
+        next_step = conditions[0].step
+        for jc in conditions:
+            if jc.step not in ("end", "retry", "endNode"):
+                next_step = jc.step
+                break
+        return RouteDecision(next_step=next_step, reason="default: first non-terminal branch")
+
+    async def on_authorization(self, agent_name: str, auth_request: Dict[str, Any]) -> bool:
+        return True
+
+    async def on_notification(self, agent_name: str, notification: Dict[str, Any]) -> None:
+        return None
+
+    async def on_negotiation(self, agent_name: str, negotiation_text: str,
+                             receive_result: Dict[str, Any]) -> str:
+        if self._negotiation_strategy is not None:
+            return await self._negotiation_strategy.resolve(
+                agent_name, negotiation_text, receive_result)
         return "Please proceed with the original task using available information."
 
 

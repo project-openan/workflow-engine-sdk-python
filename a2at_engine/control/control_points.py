@@ -17,12 +17,21 @@
 
 """Control point interfaces -- user implements the decision layer.
 
-Decision points where the user retains control:
-- on_task: send a task to an agent (user decides when/how)      [required]
-- on_route: choose a branch (user decides which path)           [required]
-- on_authorization: approve/deny authorization requests         [optional]
-- on_notification: handle notification pushes                    [optional]
+Decision points split by responsibility:
 
+ControlPoint (workflow control -- drives the workflow forward):
+- on_task: send a task to an agent (user decides when/how)      [required]
+- on_self_task: handle a self-loop task locally                 [default]
+- on_route: choose a branch (user decides which path)           [required]
+- on_negotiation: supply clarification during Negotiation-T     [default]
+
+ExtensionCallback (reactive to agent-pushed A2A-T data):
+- on_authorization: approve/deny authorization requests         [default]
+- on_notification: handle notification pushes                   [default]
+
+The split keeps ControlPoint focused on flow decisions (called by the
+executor + the client auto-negotiate loop) and isolates the reactive
+extension hooks (called by the Authorization-T / Notification-T handlers).
 EventCallback is optional; instantiate directly as a no-op sink or subclass.
 """
 
@@ -39,9 +48,8 @@ from a2at_engine.core.models import (
 class EventType:
     """Execution event types emitted by the SDK.
 
-    Compare with ``event_type == EventType.STEP_START`` etc. Values are stable
-    strings, so direct string comparison (``event_type == "step_start"``) also
-    works for backward compatibility.
+    Values are stable strings, so direct string comparison
+    (``event_type == "step_start"``) also works.
 
     These constants cover every event emitted across the three layers:
     lifecycle (``START``/``COMPLETE``/``ERROR``/``CLOSE`` from the runner),
@@ -56,7 +64,6 @@ class EventType:
     START = "start"
     COMPLETE = "complete"
     CLOSE = "close"
-
     # Step / task execution (WorkflowExecutor)
     STEP_START = "step_start"
     STEP_COMPLETE = "step_complete"
@@ -65,14 +72,12 @@ class EventType:
     TASK_STATUS_CHANGED = "task_status_changed"
     ROUTE_DECISION = "route_decision"
     WORKFLOW_COMPLETE = "workflow_complete"
-
     # Agent traffic (WorkflowEngineClient)
     AGENT_REQUEST = "agent_request"
     AGENT_RESPONSE = "agent_response"
     AGENT_STATUS_UPDATE = "agent_status_update"
     AGENT_ARTIFACT_UPDATE = "agent_artifact_update"
     AGENT_MESSAGE_EVENT = "agent_message_event"
-
     # A2A-T extensions (negotiation / authorization / notification)
     NEGOTIATION_REQUEST = "negotiation_request"
     NEGOTIATION_RESOLVED = "negotiation_resolved"
@@ -80,7 +85,6 @@ class EventType:
     AUTHORIZATION_REQUEST = "authorization_request"
     AUTHORIZATION_RESOLVED = "authorization_resolved"
     NOTIFICATION = "notification"
-
     # Emitted by both the executor (step failure) and the runner (final
     # failure). On failure you may see two "error" events with different
     # data shapes -- see the Developer Guide.
@@ -88,11 +92,12 @@ class EventType:
 
 
 class ControlPoint(ABC):
-    """User-facing control point interface.
+    """Workflow-control decision interface.
 
-    ``on_task`` and ``on_route`` are required (abstract). ``on_authorization``
-    and ``on_notification`` have default implementations and are only invoked
-    when the corresponding A2A-T extension handler is registered.
+    Each method drives the workflow forward and is called by the
+    WorkflowExecutor (``on_task`` / ``on_self_task`` / ``on_route``) or the
+    client auto-negotiate loop (``on_negotiation``). Reactive hooks for
+    agent-pushed A2A-T data live on :class:`ExtensionCallback` instead.
     """
 
     @abstractmethod
@@ -131,22 +136,6 @@ class ControlPoint(ABC):
         """
         ...
 
-    async def on_authorization(self, agent_name: str, auth_request: Dict[str, Any]) -> bool:
-        """Called when an agent requests authorization. Return True to approve.
-
-        Default: approve. Override to apply a custom authorization policy.
-        Only invoked when the Authorization-T handler is registered.
-        """
-        return True
-
-    async def on_notification(self, agent_name: str, notification: Dict[str, Any]) -> None:
-        """Called when a notification is received from an agent.
-
-        Default: no-op. Override to handle agent notifications.
-        Only invoked when the Notification-T handler is registered.
-        """
-        return None
-
     async def on_negotiation(self, agent_name: str, negotiation_text: str,
                              receive_result: Dict[str, Any]) -> str:
         """Provide supplementary data when an agent returns INPUT_REQUIRED.
@@ -157,8 +146,50 @@ class ControlPoint(ABC):
         agent returns INPUT_REQUIRED.
 
         Default: returns a generic clarification.
-       """
+        """
         return "Please proceed with the original task using available information."
+
+
+class ExtensionCallback(ABC):
+    """Reactive hooks for agent-pushed A2A-T extension data.
+
+    Invoked by the Authorization-T / Notification-T extension handlers when
+    an agent pushes authorization requests or notifications back in a task
+    response. These are distinct from :class:`ControlPoint` flow decisions:
+    they react to peer-initiated extension traffic rather than driving the
+    workflow forward. Only invoked when the corresponding handler is
+    registered on the engine client.
+    """
+
+    async def on_authorization(self, agent_name: str, auth_request: Dict[str, Any]) -> bool:
+        """Called when an agent requests authorization. Return True to approve.
+
+        Default: approve. Override to apply a custom authorization policy.
+        """
+        return True
+
+    async def on_notification(self, agent_name: str, notification: Dict[str, Any]) -> None:
+        """Called when a notification is received from an agent.
+
+        Default: no-op. Override to handle agent notifications.
+
+        Note: the subscription *result* (e.g. a recovery outcome the agent
+        pushes later) flows back through the ``send_notification`` /
+        ``send_extension_message`` response stream, not through this hook.
+        This hook only fires when an agent voluntarily includes a
+        Notification-T payload in a ``send_message`` task response.
+        """
+        return None
+
+
+class DefaultExtensionCallback(ExtensionCallback):
+    """No-op extension callback. Approves authorizations, ignores notifications."""
+
+    async def on_authorization(self, agent_name: str, auth_request: Dict[str, Any]) -> bool:
+        return True
+
+    async def on_notification(self, agent_name: str, notification: Dict[str, Any]) -> None:
+        return None
 
 
 class NegotiationStrategy(ABC):
@@ -207,12 +238,6 @@ class DefaultControlPoint(ControlPoint):
                 next_step = jc.step
                 break
         return RouteDecision(next_step=next_step, reason="default: first non-terminal branch")
-
-    async def on_authorization(self, agent_name: str, auth_request: Dict[str, Any]) -> bool:
-        return True
-
-    async def on_notification(self, agent_name: str, notification: Dict[str, Any]) -> None:
-        return None
 
     async def on_negotiation(self, agent_name: str, negotiation_text: str,
                              receive_result: Dict[str, Any]) -> str:

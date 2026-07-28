@@ -30,7 +30,7 @@ from typing import Any, Dict, Optional, List, TYPE_CHECKING
 from loguru import logger
 
 if TYPE_CHECKING:
-    from a2at_engine.control.control_points import ControlPoint
+    from a2at_engine.control.control_points import ControlPoint, ExtensionCallback
 
 from a2at_engine.core.models import SendMessageResult
 
@@ -39,11 +39,14 @@ class ExtensionHandler(ABC):
     extension_keyword: str = ""
 
     @abstractmethod
-    async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None) -> Dict[str, Any]:
+    async def before_send(self, agent_card, message_text, metadata,
+                          a2at_client=None, control_point=None) -> Dict[str, Any]:
         ...
 
     @abstractmethod
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None) -> SendMessageResult:
+    async def after_receive(self, agent_card, result, a2at_client=None,
+                            control_point=None, extension_callback=None,
+                            event_callback=None) -> SendMessageResult:
         ...
 
 
@@ -152,9 +155,11 @@ class AuthorizationTHandler(ExtensionHandler):
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
+    async def after_receive(self, agent_card, result, a2at_client=None,
+                            control_point=None, extension_callback=None,
+                            event_callback=None):
         auth_request = result.metadata.get("Authorization-T") if result.metadata else None
-        if not auth_request or not control_point:
+        if not auth_request or not extension_callback:
             return result
         agent_name = getattr(agent_card, "name", "")
         logger.info(f"[Authorization-T] Agent '{agent_name}' requests authorization")
@@ -163,7 +168,7 @@ class AuthorizationTHandler(ExtensionHandler):
                 "agent": agent_name,
                 "auth_request": auth_request if isinstance(auth_request, (str, dict)) else str(auth_request),
             })
-        approved = await control_point.on_authorization(agent_name, auth_request)
+        approved = await extension_callback.on_authorization(agent_name, auth_request)
         if approved:
             result.metadata["authorization_approved"] = True
             logger.info(f"[Authorization-T] Approved for '{agent_name}'")
@@ -182,24 +187,14 @@ class NotificationTHandler(ExtensionHandler):
     extension_keyword = "Notification-T"
 
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
-        notif_uri = None
-        extensions = getattr(getattr(agent_card, "capabilities", None), "extensions", None) or []
-        for ext in extensions:
-            uri = getattr(ext, "uri", "") or ""
-            if "Notification-T" in uri:
-                notif_uri = uri
-                break
-        if not notif_uri:
-            return metadata
-        if notif_uri in (metadata or {}):
-            logger.info("[Notification-T] Metadata already preset, skipping subscription injection")
-            return metadata
-        metadata = dict(metadata) if metadata else {}
-        metadata[notif_uri] = {"action": "subscribe", "topic": "recovery_result"}
-        logger.info(f"[Notification-T] Injected subscription for '{getattr(agent_card, 'name', '?')}'")
+        # Subscriptions are established once via send_notification /
+        # send_extension_message (pre-positioning), NOT re-injected on every
+        # task send. This hook is intentionally a pass-through.
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
+    async def after_receive(self, agent_card, result, a2at_client=None,
+                            control_point=None, extension_callback=None,
+                            event_callback=None):
         notification = None
         if result.metadata:
             notification = result.metadata.get("Notification-T")
@@ -208,7 +203,7 @@ class NotificationTHandler(ExtensionHandler):
                     if isinstance(k, str) and "Notification-T" in k:
                         notification = v
                         break
-        if not notification or not control_point:
+        if not notification or not extension_callback:
             return result
         agent_name = getattr(agent_card, "name", "")
         logger.info(f"[Notification-T] Received notification from '{agent_name}'")
@@ -217,7 +212,7 @@ class NotificationTHandler(ExtensionHandler):
                 "agent": agent_name,
                 "notification": notification if isinstance(notification, (str, dict)) else str(notification),
             })
-        await control_point.on_notification(agent_name, notification)
+        await extension_callback.on_notification(agent_name, notification)
         return result
 
 

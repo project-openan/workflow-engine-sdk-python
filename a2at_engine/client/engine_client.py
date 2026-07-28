@@ -49,7 +49,7 @@ from a2at_engine.client.extensions import A2ATExtension
 from a2at_engine.client.credential_crypto import decrypt_if_needed as _decrypt_credential
 from a2at_engine.client.env_file_loader import load_to_environ as _load_env_file
 from a2at_engine.client.auth_provider import AuthProvider
-from a2at_engine.control.control_points import EventType
+from a2at_engine.control.control_points import EventType, ExtensionCallback, DefaultExtensionCallback
 
 # Apply SSE response normalization once at import time.
 apply_sse_normalization()
@@ -80,6 +80,7 @@ class WorkflowEngineClient:
         custom_handlers: Optional[List[ExtensionHandler]] = None,
         event_callback: Optional[EventCallback] = None,
         auth_provider: Optional[AuthProvider] = None,
+        extension_callback: Optional[ExtensionCallback] = None,
         max_negotiation_rounds: int = 3,
         preferred_protocol: Optional[str] = None,
         send_timeout_seconds: int = 600,
@@ -91,6 +92,7 @@ class WorkflowEngineClient:
         self._card_map = {
             card.name: card for card in normalized_cards if hasattr(card, "name")
         }
+        self._send_timeout_seconds = send_timeout_seconds
         self._httpx_client = httpx_client or self._create_httpx_client(
             ssl_verify, ca_certs_path
         )
@@ -105,10 +107,9 @@ class WorkflowEngineClient:
         self._control_point = None
         self._event_callback = event_callback
         self._auth_provider = auth_provider
+        self._extension_callback = extension_callback
         self._max_negotiation_rounds = max_negotiation_rounds
         self._preferred_protocol = preferred_protocol
-        self._send_timeout_seconds = send_timeout_seconds
-        self._send_timeout_seconds = send_timeout_seconds
         logger.info(
             f"[EngineClient] Initialized with {len(self._card_map)} agent(s), "
             f"ssl_verify={ssl_verify}, a2at={self._a2at_client is not None}, "
@@ -153,6 +154,12 @@ class WorkflowEngineClient:
 
     def set_control_point(self, control_point):
         self._control_point = control_point
+
+    def set_extension_callback(self, extension_callback: ExtensionCallback):
+        """Attach an ExtensionCallback for Authorization-T / Notification-T
+        reactive hooks (on_authorization / on_notification). These are
+        distinct from the workflow-control ControlPoint."""
+        self._extension_callback = extension_callback
 
     def set_event_callback(self, callback):
         """Attach an EventCallback so send_message emits agent_request/response."""
@@ -479,7 +486,8 @@ class WorkflowEngineClient:
         for handler in handlers:
             result = await handler.after_receive(
                 agent_card, result,
-                self._a2at_client, self._control_point, self._event_callback,
+                self._a2at_client, self._control_point,
+                self._extension_callback, self._event_callback,
             )
         return result
 

@@ -21,7 +21,7 @@
 Quick start:
 
     from a2at_engine import (
-        WorkflowExecutor, ControlPoint, WorkflowEngineClient,
+        WorkflowExecutor, ControlPoint, ExtensionCallback, WorkflowEngineClient,
         Workflow, TaskResponse, RouteDecision,
     )
 
@@ -29,17 +29,20 @@ Quick start:
     # 2. User creates WorkflowEngineClient with those cards
     engine_client = WorkflowEngineClient(agent_cards=my_cards, a2at_env_path=".env")
 
-    # 3. User implements ControlPoint (decision layer)
+    # 3. User implements ControlPoint (workflow decisions) and optionally
+    #    ExtensionCallback (reactive Authorization-T / Notification-T hooks)
     class MyCP(ControlPoint):
         async def on_task(self, request, engine_client):
             result = await engine_client.send_message(request.agent_name, request.message)
             return TaskResponse(success=True, output=result.text)
         async def on_route(self, step_name, results, conditions):
             return RouteDecision(next_step="step_b")
+    class MyExtCB(ExtensionCallback):
         async def on_authorization(self, agent_name, auth_request):
             return True
         async def on_notification(self, agent_name, notification):
             print(f"Notification from {agent_name}: {notification}")
+    engine_client.set_extension_callback(MyExtCB())
 
     # 4. Execute
     executor = WorkflowExecutor(workflow=wf, control_point=MyCP(), engine_client=engine_client)
@@ -61,7 +64,10 @@ from a2at_engine.client import (
     create_ssl_context, normalize_agent_dict, StubWorkflowEngineClient, log_request, log_response,
 )
 from a2at_engine.control import ControlPoint, EventCallback, EventType
-from a2at_engine.control import NegotiationStrategy, DefaultControlPoint
+from a2at_engine.control import (
+    NegotiationStrategy, DefaultControlPoint,
+    ExtensionCallback, DefaultExtensionCallback,
+)
 from a2at_engine.registry import RegistryClient, load_psop, search_psop
 from a2at_engine.runner import execute_psop
 
@@ -81,6 +87,7 @@ __all__ = [
     # Control (user implements)
     "ControlPoint", "EventCallback", "EventType",
     "NegotiationStrategy", "DefaultControlPoint",
+    "ExtensionCallback", "DefaultExtensionCallback",
     # Registry (optional)
     "RegistryClient", "load_psop", "search_psop",
     # High-level runner

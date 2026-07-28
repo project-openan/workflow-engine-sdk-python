@@ -58,7 +58,6 @@ apply_sse_normalization()
 # Type alias for the negotiation resolver callback. May be sync (returning
 # str/None) or async (returning an awaitable of str/None). The SDK awaits
 # coroutine results automatically, so an `async def` resolver is supported.
-NegotiationResolver = Callable[[str, str, dict], Union[str, None, Awaitable[Optional[str]]]]
 
 
 class WorkflowEngineClient:
@@ -454,39 +453,6 @@ class WorkflowEngineClient:
         # TODO: call self._a2at_client.generate_notification_prompt(...) when SDK exposes it.
         return ''
 
-    async def send_message_with_negotiation(
-        self,
-        agent_name: str,
-        message: str,
-        context_id: Optional[str] = None,
-        max_rounds: int = 3,
-        negotiation_resolver: Optional[NegotiationResolver] = None,
-    ) -> SendMessageResult:
-        """Send a message and auto-resolve negotiation rounds.
-
-        When the agent returns INPUT_REQUIRED with a negotiation context,
-        this method uses the A2A-T SDK receive_negotiation and
-        continue_negotiation to advance the state machine, then retries
-        with the resolved task.
-
-        Args:
-            negotiation_resolver: Optional callable(agent_name, negotiation_text,
-                receive_result) -> str.  If provided, its return value is used
-                as the clarification text.  If None, a default clarification
-                is used.
-        """
-        result = await self.send_message(agent_name, message, context_id)
-        rounds = 0
-
-        while self._is_negotiation_needed(result) and rounds < max_rounds:
-            rounds += 1
-            result = await self._resolve_negotiation_round(
-                agent_name, message, context_id, result, rounds,
-                negotiation_resolver,
-            )
-
-        return result
-
     # ------------------------------------------------------------------
     # send_message helpers
     # ------------------------------------------------------------------
@@ -762,149 +728,6 @@ class WorkflowEngineClient:
         return bool(
             result.task_state and "INPUT_REQUIRED" in result.task_state
         )
-
-    async def _await_resolver(
-        self,
-        resolver: Optional[NegotiationResolver],
-        agent_name: str,
-        negotiation_text: str,
-        receive_result: Optional[dict],
-    ) -> Optional[str]:
-        """Call the resolver, awaiting it if it returned a coroutine.
-
-        Accepts both sync (returning str/None) and ``async def`` resolvers.
-        An empty or None result is treated as "no clarification".
-        """
-        if resolver is None:
-            return None
-        try:
-            clarification = resolver(agent_name, negotiation_text, receive_result)
-        except Exception as e:
-            logger.warning(f"[Negotiation] resolver raised: {e}")
-            return None
-        if asyncio.iscoroutine(clarification):
-            try:
-                clarification = await clarification
-            except Exception as e:
-                logger.warning(f"[Negotiation] resolver await raised: {e}")
-                return None
-        if clarification is None:
-            return None
-        return str(clarification) if clarification else None
-
-    async def _resolve_negotiation_round(
-        self,
-        agent_name: str,
-        original_message: str,
-        context_id: Optional[str],
-        result: SendMessageResult,
-        round_num: int,
-        resolver: Optional[NegotiationResolver],
-    ) -> SendMessageResult:
-        neg_context = result.metadata.get("negotiation_context")
-        neg_msg = result.metadata.get("negotiation_message", "")
-
-        # Emit negotiation_request for observability (frontend shows the round).
-        self._emit("negotiation_request", {
-            "agent": agent_name, "round": round_num,
-            "concern": (neg_msg or "")[:200] or "(Agent expressed uncertainty)",
-        })
-
-        # Fallback: no A2AT context -- still let the caller decide the
-        # clarification via the resolver, so the caller's negotiation policy
-        # covers ALL negotiation paths (not just A2A-T protocol ones).
-        if not neg_context or not self._a2at_client:
-            if neg_msg:
-                logger.info(
-                    f"[Negotiation] Round {round_num} for '{agent_name}' "
-                    f"(no A2AT context)"
-                )
-                clarification = None
-                if resolver:
-                    clarification = await self._await_resolver(
-                        resolver, agent_name, neg_msg, None
-                    )
-                if clarification:
-                    self._emit("negotiation_resolved", {"agent": agent_name, "round": round_num, "clarification": clarification[:200]})
-                    follow_up = (
-                        f"[NEGOTIATION_RESOLUTION]\n"
-                        f"The engine has reviewed your negotiation request and provides "
-                        f"the following clarification:\n\n{clarification}\n\n"
-                        f"---\nOriginal Task:\n{original_message}\n\n"
-                        f"Please re-execute the task based on the clarification above."
-                    )
-                else:
-                    self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": "no clarification from resolver"})
-                    follow_up = (
-                        f"Original task: {original_message}\n\n"
-                        f"Clarification needed:\n{neg_msg}"
-                    )
-                return await self.send_message(agent_name, follow_up, context_id)
-            return result
-
-        if not _A2AT_AVAILABLE or NegotiationContext is None:
-            logger.warning("[Negotiation] a2a-t negotiation models not available")
-            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": "a2a-t negotiation models not available"})
-            return result
-
-        logger.info(f"[Negotiation] Round {round_num} for '{agent_name}'")
-
-        try:
-            receive_result = self._a2at_client.receive_negotiation(
-                message=result.text,
-                context=neg_context,
-            )
-        except Exception as e:
-            logger.warning(f"[Negotiation] receive_negotiation failed: {e}")
-            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": f"receive_negotiation failed: {e}"})
-            return result
-
-        if not receive_result.get("needResponse", False):
-            logger.warning(
-                f"[Negotiation] Agent '{agent_name}' does not need a response"
-            )
-            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": "agent did not require a response"})
-            return result
-
-       # Resolve the negotiation -- user provides clarification or use default
-        if resolver:
-            clarification = await self._await_resolver(
-                resolver, agent_name, neg_msg, receive_result
-            )
-            if clarification is None:
-                self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": "no clarification from resolver"})
-                return result
-        else:
-            clarification = (
-                "Please proceed with the original task using the information "
-                "available. If you have specific questions, state them clearly."
-            )
-
-        try:
-            ctx_obj = NegotiationContext.from_context(neg_context)
-            self._a2at_client.continue_negotiation(
-                ContinueNegotiationInput(
-                    context=ctx_obj,
-                    status=NegotiationStatus.AGREED,
-                    content_text=clarification,
-                )
-            )
-        except Exception as e:
-            logger.error(f"[Negotiation] continue_negotiation failed: {e}")
-            self._emit("negotiation_failed", {"agent": agent_name, "round": round_num, "reason": f"continue_negotiation failed: {e}"})
-            return result
-
-        self._emit("negotiation_resolved", {"agent": agent_name, "round": round_num, "clarification": (clarification or "")[:200]})
-
-        # Build resolved task and retry
-        follow_up = (
-            f"[NEGOTIATION_RESOLUTION]\n"
-            f"The engine has reviewed your negotiation request and provides "
-            f"the following clarification:\n\n{clarification}\n\n"
-            f"---\nOriginal Task:\n{original_message}\n\n"
-            f"Please re-execute the task based on the clarification above."
-        )
-        return await self.send_message(agent_name, follow_up, context_id)
 
     # ------------------------------------------------------------------
     # Utility

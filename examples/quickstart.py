@@ -29,6 +29,7 @@ from a2at_engine import (
     WorkflowExecutor,
     ControlPoint,
     WorkflowEngineClient,
+    A2ATransport,
     RegistryClient,
     Workflow,
     TaskResponse,
@@ -65,12 +66,13 @@ async def main():
     registry = RegistryClient(url="https://127.0.0.1:5000")
     agent_cards = await registry.fetch_agent_cards()
 
-    # 2. Create the engine client
-    engine_client = WorkflowEngineClient(
+    # 2. Build a shared transport, then the workflow facade on top
+    transport = A2ATransport(
         agent_cards=agent_cards,
         a2at_env_path=".env",
         credentials_config="agent_credentials.json",
     )
+    engine_client = WorkflowEngineClient(transport)
 
     # 3. Load a workflow from the orchestration center (external API)
     from a2at_engine import load_psop

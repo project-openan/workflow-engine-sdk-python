@@ -34,6 +34,7 @@ from loguru import logger
 from a2at_engine.core.models import Workflow, ExecutionResult
 from a2at_engine.core.executor import WorkflowExecutor
 from a2at_engine.client.engine_client import WorkflowEngineClient
+from a2at_engine.client.a2a_transport import A2ATransport
 from a2at_engine.control.control_points import ControlPoint, EventCallback
 
 
@@ -143,13 +144,15 @@ async def execute_psop(
 
     emitter = _EventEmitter()
     if engine_client is None:
-        engine_client = WorkflowEngineClient(
+        transport = A2ATransport(
             agent_cards=agent_cards,
             a2at_env_path=a2at_env_path,
             credentials_config=credentials_config,
             ssl_verify=ssl_verify,
             ca_certs_path=ca_certs_path,
-            event_callback=emitter,
+        )
+        engine_client = WorkflowEngineClient(
+            transport, event_callback=emitter,
         )
     else:
         # Attach the emitter to a caller-provided client so its

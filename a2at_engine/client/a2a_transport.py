@@ -1,0 +1,393 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+
+"""A2ATransport -- shared low-level A2A communication layer.
+
+Single responsibility: own the httpx client, auth manager, agent-card
+map, the A2ATClient handle, and the SSE stream consumer. This is the
+shared base over which the two single-responsibility facades sit:
+
+* ``WorkflowEngineClient`` (engine_client.py) -- workflow execution
+  path: Task-T prompt generation, Negotiation-T auto-loop, extension
+  handlers, event callback, control point.
+* ``ExtensionSender`` (extension_sender.py) -- one-shot pre-positioning
+  sends: Authorization-T / Notification-T.
+
+Neither facade duplicates transport code; both delegate here.
+"""
+
+import uuid
+from typing import Dict, Any, List, Optional, Callable
+from loguru import logger
+
+import httpx
+
+try:
+    from a2a.client import ClientConfig, ClientFactory
+    from a2a.helpers import new_text_message
+    from a2a.types import SendMessageRequest, TaskState
+    from google.protobuf.json_format import MessageToDict
+    from google.protobuf.struct_pb2 import Struct
+    _A2A_AVAILABLE = True
+except ImportError:
+    _A2A_AVAILABLE = False
+
+try:
+    from a2a_t.client import A2ATClient
+    _A2AT_AVAILABLE = True
+except ImportError:
+    _A2AT_AVAILABLE = False
+    A2ATClient = None
+
+from a2at_engine.client.ssl_context import create_ssl_context
+from a2at_engine.client.auth_manager import AuthManager
+from a2at_engine.client.protocol_logger import log_request, log_response
+from a2at_engine.client.sse_normalization import apply_sse_normalization
+from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
+from a2at_engine.control.control_points import EventType
+from a2at_engine.core.models import SendMessageResult
+from a2at_engine.client.credential_crypto import decrypt_if_needed as _decrypt_credential
+from a2at_engine.client.env_file_loader import load_to_environ as _load_env_file
+from a2at_engine.client.auth_provider import AuthProvider
+
+# Apply SSE response normalization once at import time.
+apply_sse_normalization()
+
+
+class A2ATransport:
+    """Shared A2A communication base (httpx + auth + SSE consumer).
+
+    Owns the httpx.AsyncClient, AgentAuthManager, agent-card map, the
+    A2ATClient handle, and the streaming-response consumer. Facades
+    (WorkflowEngineClient / ExtensionSender) delegate all wire-level
+    work here.
+    """
+
+    def __init__(
+        self,
+        agent_cards: List[Any],
+        httpx_client: Optional[httpx.AsyncClient] = None,
+        credentials_config: Optional[str | Dict] = None,
+        a2at_env_path: Optional[str] = None,
+        ssl_verify: bool = True,
+        ca_certs_path: Optional[str] = None,
+        auth_provider: Optional[AuthProvider] = None,
+        preferred_protocol: Optional[str] = None,
+        send_timeout_seconds: int = 600,
+    ):
+        if a2at_env_path:
+            _load_env_file(a2at_env_path)
+        normalized_cards = self._normalize_cards(agent_cards)
+        self._card_map = {
+            card.name: card for card in normalized_cards if hasattr(card, "name")
+        }
+        self._send_timeout_seconds = send_timeout_seconds
+        self._httpx_client = httpx_client or self._create_httpx_client(
+            ssl_verify, ca_certs_path
+        )
+        self._auth_manager = AuthManager(agent_cards, credentials_config)
+        self._auth_manager.set_httpx_client(self._httpx_client)
+        self._a2at_client = self._init_a2at_client(a2at_env_path)
+        self._context_id = str(uuid.uuid4())
+        self._auth_provider = auth_provider
+        self._preferred_protocol = preferred_protocol
+        logger.info(
+            f"[Transport] Initialized with {len(self._card_map)} agent(s), "
+            f"ssl_verify={ssl_verify}, a2at={self._a2at_client is not None}, "
+            f"send_timeout={send_timeout_seconds}s"
+        )
+
+    # ------------------------------------------------------------------
+    # Setup helpers
+    # ------------------------------------------------------------------
+
+    def _init_a2at_client(self, a2at_env_path):
+        if not a2at_env_path or not _A2AT_AVAILABLE:
+            return None
+        from pathlib import Path
+        env_path = Path(a2at_env_path) if not isinstance(a2at_env_path, Path) else a2at_env_path
+        try:
+            client = A2ATClient(env_path=env_path)
+            logger.info("A2ATClient initialized")
+            return client
+        except Exception as e:
+            logger.warning(f"Failed to init A2ATClient: {e}")
+            return None
+
+    def _create_httpx_client(self, ssl_verify, ca_certs_path) -> httpx.AsyncClient:
+        if not ssl_verify:
+            logger.warning(
+                "[Transport] ssl_verify=False -- TLS server certificate "
+                "validation disabled. Not recommended for production."
+            )
+        ssl_ctx = create_ssl_context(
+            verify_server=ssl_verify, ca_certs_path=ca_certs_path
+        )
+        return httpx.AsyncClient(
+            timeout=httpx.Timeout(connect=60, read=self._send_timeout_seconds, write=60, pool=10.0),
+            verify=ssl_ctx,
+            follow_redirects=True,
+        )
+
+    @staticmethod
+    def normalize_agent_dict(agent_dict: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize an AgentCard dict to protobuf-compatible format."""
+        return normalize_agent_dict(agent_dict)
+
+    @staticmethod
+    def _normalize_cards(agent_cards: List[Any]) -> List[Any]:
+        import json
+        try:
+            from a2a.types import AgentCard
+            from google.protobuf.json_format import Parse
+        except ImportError:
+            AgentCard = None
+            Parse = None
+        result = []
+        for card in agent_cards:
+            if isinstance(card, dict):
+                normalized = normalize_agent_dict(card)
+                if AgentCard is None or Parse is None:
+                    raise TypeError(
+                        "agent_cards contains dict entries but a2a-sdk is not "
+                        "installed; pass protobuf AgentCard objects instead "
+                        "(e.g. via RegistryClient.fetch_agent_cards())."
+                    )
+                try:
+                    card = Parse(json.dumps(normalized), AgentCard())
+                except Exception as e:
+                    raise TypeError(f"Failed to parse AgentCard dict: {e}") from e
+                name = getattr(card, "name", "") or "<unknown>"
+                logger.info(f"[Transport] Auto-normalized dict AgentCard -> {name}")
+            result.append(card)
+        return result
+
+    # ------------------------------------------------------------------
+    # Accessors
+    # ------------------------------------------------------------------
+
+    @property
+    def agent_names(self) -> List[str]:
+        return list(self._card_map.keys())
+
+    @property
+    def httpx_client(self) -> httpx.AsyncClient:
+        return self._httpx_client
+
+    def get_a2at_client(self):
+        return self._a2at_client
+
+    def get_card(self, agent_name: str):
+        return self._card_map.get(agent_name)
+
+    def update_agent_cards(self, agent_cards: List[Any]):
+        self._card_map = {
+            card.name: card for card in agent_cards if hasattr(card, "name")
+        }
+
+    # ------------------------------------------------------------------
+    # Wire-level send primitives (shared by both facades)
+    # ------------------------------------------------------------------
+
+    def create_a2a_client(self, agent_card):
+        interfaces = [
+            iface for iface in agent_card.supported_interfaces
+            if iface.protocol_binding
+        ]
+        if self._preferred_protocol and interfaces:
+            matched = [
+                iface for iface in interfaces
+                if iface.protocol_binding.upper() == self._preferred_protocol.upper()
+            ]
+            if matched:
+                interfaces = matched
+            else:
+                logger.warning(
+                    f"[Transport] Preferred protocol {self._preferred_protocol} "
+                    f"not in supportedInterfaces for {agent_card.name}, using first available"
+                )
+        protocol_bindings = (
+            [iface.protocol_binding for iface in interfaces]
+            or ["HTTP+JSON", "JSONRPC"]
+        )
+        streaming = (
+            agent_card.capabilities.streaming if agent_card.capabilities else False
+        )
+        config = ClientConfig(
+            httpx_client=self._httpx_client,
+            supported_protocol_bindings=protocol_bindings,
+            streaming=streaming,
+        )
+        interceptors = self._auth_manager.get_interceptors(agent_card.name)
+        if self._auth_provider is not None:
+            from a2at_engine.client.auth_manager import AuthProviderInterceptor
+            interceptors = list(interceptors) + [AuthProviderInterceptor(
+                self._auth_provider, agent_card.name)]
+        logger.info(f"[Transport] Created A2A client for {agent_card.name}: protocol={protocol_bindings}, streaming={streaming}, interceptors={len(interceptors)}")
+        return ClientFactory(config).create(agent_card, interceptors=interceptors)
+
+    def build_send_request(self, message, context_id, metadata):
+        ctx = context_id or self._context_id
+        request_msg = new_text_message(text=message, context_id=ctx)
+        if metadata:
+            meta = Struct()
+            meta.update(metadata)
+            request_msg.metadata.CopyFrom(meta)
+        return SendMessageRequest(message=request_msg)
+
+    async def consume_stream(
+        self, client, send_req,
+        on_intermediate: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+    ):
+        """Iterate over streaming responses, extract text/task/state/metadata.
+
+        Optionally forwards intermediate events (status updates, artifact
+        updates, message events) through ``on_intermediate`` when provided
+        by the calling facade (the workflow facade wires it to its
+        EventCallback). Merges task-level AND artifact-level metadata into
+        the result so extension payloads on artifacts reach the extension
+        handlers.
+        """
+        response_text = None
+        last_task_result = None
+        last_metadata_dict: Dict[str, Any] = {}
+        task_state = ""
+
+        async for response in client.send_message(send_req):
+            has_task = response.HasField("task")
+            has_message = response.HasField("message")
+
+            if has_task:
+                task = response.task
+                state = self._extract_task_state(task)
+                logger.info(f"[Transport] Received StreamResponse with task: state={state or None}")
+                last_task_result = task
+                response_text = self._extract_task_text(task, response_text)
+                task_state = state or task_state
+                last_metadata_dict = self._merge_task_metadata(task, last_metadata_dict)
+                if response_text is None:
+                    response_text = self._text_from_metadata(last_metadata_dict)
+                if on_intermediate is not None:
+                    on_intermediate(EventType.AGENT_STATUS_UPDATE, {
+                        "agent": getattr(task, "name", "") or "",
+                        "state": task_state,
+                        "text": response_text or "",
+                    })
+            elif has_message:
+                logger.info("[Transport] Received StreamResponse with message")
+                msg_text = self._extract_message_text(response.message, None)
+                response_text = self._extract_message_text(response.message, response_text)
+                if on_intermediate is not None:
+                    on_intermediate(EventType.AGENT_MESSAGE_EVENT, {
+                        "agent": "",
+                        "text": msg_text or "",
+                    })
+
+        return response_text, last_task_result, last_metadata_dict, task_state
+
+    # ------------------------------------------------------------------
+    # Parsing helpers (static)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _merge_task_metadata(task, current: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge task-level AND each artifact's metadata into the result map."""
+        result = dict(current) if current else {}
+        md = task.metadata
+        if md:
+            if isinstance(md, dict):
+                result.update(md)
+            else:
+                try:
+                    result.update(MessageToDict(md, preserving_proto_field_name=True))
+                except Exception:
+                    pass
+        artifacts = task.artifacts if hasattr(task, "artifacts") else None
+        if artifacts:
+            for artifact in artifacts:
+                am = getattr(artifact, "metadata", None)
+                if am:
+                    if isinstance(am, dict):
+                        result.update(am)
+                    else:
+                        try:
+                            result.update(MessageToDict(am, preserving_proto_field_name=True))
+                        except Exception:
+                            pass
+        return result
+
+    @staticmethod
+    def _extract_task_text(task, current_text: Optional[str]) -> Optional[str]:
+        if not task.artifacts:
+            return current_text
+        for artifact in task.artifacts:
+            if artifact.parts:
+                for part in artifact.parts:
+                    if part.text:
+                        current_text = (current_text or "") + part.text
+        return current_text
+
+    @staticmethod
+    def _extract_task_state(task) -> str:
+        if not (task.status and task.status.state):
+            return ""
+        try:
+            return TaskState.Name(task.status.state)
+        except Exception:
+            return str(task.status.state)
+
+    @staticmethod
+    def _extract_task_metadata(task) -> Dict[str, Any]:
+        if not task.metadata:
+            return {}
+        md = task.metadata
+        if isinstance(md, dict):
+            return md
+        return MessageToDict(md, preserving_proto_field_name=True)
+
+    @staticmethod
+    def _text_from_metadata(metadata: Dict[str, Any]) -> Optional[str]:
+        if not isinstance(metadata, dict):
+            return None
+        for val in metadata.values():
+            if isinstance(val, str) and len(val) > 20:
+                return val
+        return None
+
+    @staticmethod
+    def _extract_message_text(message, current_text: Optional[str]) -> Optional[str]:
+        if not message.parts:
+            return current_text
+        for part in message.parts:
+            if part.text:
+                current_text = (current_text or "") + part.text
+        return current_text
+
+    @staticmethod
+    def _get_extensions(agent_card) -> List[str]:
+        uris = []
+        exts = getattr(
+            getattr(agent_card, "capabilities", None), "extensions", None
+        ) or []
+        for ext in exts:
+            uri = getattr(ext, "uri", "")
+            if uri:
+                uris.append(uri)
+        return uris
+
+    # ------------------------------------------------------------------
+    # Lifecycle
+    # ------------------------------------------------------------------
+
+    async def close(self):
+        if self._httpx_client:
+            logger.info("[Transport] Closing httpx client")
+            await self._httpx_client.aclose()
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        await self.close()

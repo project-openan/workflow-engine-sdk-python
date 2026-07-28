@@ -21,13 +21,15 @@
 Quick start:
 
     from a2at_engine import (
-        WorkflowExecutor, ControlPoint, ExtensionCallback, WorkflowEngineClient,
+        WorkflowExecutor, ControlPoint, ExtensionCallback,
+        A2ATransport, WorkflowEngineClient, ExtensionSender,
         Workflow, TaskResponse, RouteDecision,
     )
 
     # 1. User fetches AgentCards (from registry or custom source)
-    # 2. User creates WorkflowEngineClient with those cards
-    engine_client = WorkflowEngineClient(agent_cards=my_cards, a2at_env_path=".env")
+    # 2. User builds a shared transport, then the workflow facade on top
+    transport = A2ATransport(agent_cards=my_cards, a2at_env_path=".env")
+    engine_client = WorkflowEngineClient(transport)
 
     # 3. User implements ControlPoint (workflow decisions) and optionally
     #    ExtensionCallback (reactive Authorization-T / Notification-T hooks)
@@ -43,6 +45,9 @@ Quick start:
         async def on_notification(self, agent_name, notification):
             print(f"Notification from {agent_name}: {notification}")
     engine_client.set_extension_callback(MyExtCB())
+    # Optional: one-shot pre-positioning (Authorization-T / Notification-T)
+    # sender = ExtensionSender(transport)
+    # await sender.send_authorization("agent_a", "authorize", "policy text")
 
     # 4. Execute
     executor = WorkflowExecutor(workflow=wf, control_point=MyCP(), engine_client=engine_client)
@@ -57,7 +62,7 @@ from a2at_engine.core import (
     ContextBuilder, WorkflowExecutor,
 )
 from a2at_engine.client import (
-    WorkflowEngineClient, AuthManager,
+    WorkflowEngineClient, A2ATransport, ExtensionSender, AuthManager,
     ExtensionHandler, TaskTHandler, NegotiationTHandler,
     AuthorizationTHandler, NotificationTHandler, ExtensionRegistry,
     A2ATExtension, AuthProvider,
@@ -79,7 +84,7 @@ __all__ = [
     "WorkflowSearchResult",
     "ContextBuilder", "WorkflowExecutor",
     # Client
-    "WorkflowEngineClient", "AuthManager",
+    "WorkflowEngineClient", "A2ATransport", "ExtensionSender", "AuthManager",
     "ExtensionHandler", "TaskTHandler", "NegotiationTHandler",
     "AuthorizationTHandler", "NotificationTHandler", "ExtensionRegistry",
     "A2ATExtension", "AuthProvider", "log_request", "log_response", "StubWorkflowEngineClient",

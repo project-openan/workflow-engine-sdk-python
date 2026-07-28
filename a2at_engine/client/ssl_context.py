@@ -17,7 +17,7 @@
 
 """SSL context factory for outbound HTTPS calls.
 
-Self-contained — does not depend on the orchestration center's config system.
+Self-contained - does not depend on the orchestration center's config system.
 Accepts a config dict with SSL parameters, or returns False (skip verification)
 when no config is provided.
 """

@@ -15,7 +15,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""A2A Extension interceptor — injects A2A-Extensions HTTP header.
+"""A2A Extension interceptor - injects A2A-Extensions HTTP header.
 
 Reads the agent's declared extensions from AgentCard.capabilities.extensions[].uri
 and sets the A2A-Extensions header so the server knows which extensions

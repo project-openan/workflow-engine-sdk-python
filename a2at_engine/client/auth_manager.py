@@ -15,7 +15,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""Auth manager — builds interceptors from AgentCard, self-contained."""
+"""Auth manager - builds interceptors from AgentCard, self-contained."""
 
 from typing import Dict, Any, List, Optional
 from loguru import logger

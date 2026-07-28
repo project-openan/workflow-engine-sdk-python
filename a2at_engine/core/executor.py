@@ -15,7 +15,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""WorkflowExecutor — DAG traversal, delegates to ControlPoint."""
+"""WorkflowExecutor - DAG traversal, delegates to ControlPoint."""
 
 import asyncio
 from collections import deque

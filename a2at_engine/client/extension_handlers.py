@@ -17,12 +17,14 @@
 
 """Extension handler registry for A2A-T extensions (SDK-internal).
 
-Built-in handlers: Task-T, Negotiation-T.
-Authorization-T and Notification-T are pre-positioning operations done
-once before the workflow starts (see
-``WorkflowEngineClient.send_extension_message``), so they are NOT part of
-the workflow's extension handler chain. The handler classes are retained
-for backward compatibility and manual registration.
+The in-workflow handler chain registers Task-T and Negotiation-T. Task-T
+generates the structured task prompt on send; Negotiation-T extracts the
+negotiation context on receive and feeds the auto-loop.
+
+Authorization-T and Notification-T are pre-positioning concerns handled
+once before the workflow starts via ExtensionSender, so they are not part
+of this chain. Their handler classes are retained for callers that need
+inline (in-workflow) handling of agent-pushed data.
 """
 
 from abc import ABC, abstractmethod
@@ -187,9 +189,9 @@ class NotificationTHandler(ExtensionHandler):
     extension_keyword = "Notification-T"
 
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
-        # Subscriptions are established once via send_notification /
-        # send_extension_message (pre-positioning), NOT re-injected on every
-        # task send. This hook is intentionally a pass-through.
+        # Subscriptions are established once before the workflow via
+        # ExtensionSender.send_notification (pre-positioning); they are not
+        # re-injected on every task send, so this hook is a pass-through.
         return metadata
 
     async def after_receive(self, agent_card, result, a2at_client=None,
@@ -217,6 +219,14 @@ class NotificationTHandler(ExtensionHandler):
 
 
 class ExtensionRegistry:
+    """Registry of in-workflow extension handlers.
+
+    Pre-registers the Task-T and Negotiation-T handlers, which participate
+    in every send_message lifecycle. Authorization-T / Notification-T are
+    excluded by design: they are one-shot pre-positioning operations
+    (see ExtensionSender), not in-workflow handlers.
+    """
+
     def __init__(self):
         self._handlers: Dict[str, ExtensionHandler] = {}
         self.register(TaskTHandler())

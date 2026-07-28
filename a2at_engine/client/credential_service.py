@@ -15,7 +15,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""Agent credential service — self-contained, no orchestration center dependency.
+"""Agent credential service - self-contained, no orchestration center dependency.
 
 Obtains Bearer tokens via login endpoints for agents requiring authentication.
 Reads credentials from a user-provided config (JSON file or dict).

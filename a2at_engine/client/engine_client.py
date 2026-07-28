@@ -1,3 +1,20 @@
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# All Rights Reserved.
+#
+# SPDX-License-Identifier: Apache-2.0
+#
+#    Licensed under the Apache License, Version 2.0 (the "License"); you may
+#    not use this file except in compliance with the License. You may obtain
+#    a copy of the License at
+#
+#         http://www.apache.org/licenses/LICENSE-2.0
+#
+#    Unless required by applicable law or agreed to in writing, software
+#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
+#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
+#    License for the specific language governing permissions and limitations
+#    under the License.
+
 """WorkflowEngineClient -- workflow-execution facade over A2ATransport.
 
 Single responsibility: the workflow execution send path. Owns the
@@ -205,7 +222,7 @@ class WorkflowEngineClient:
             "Please re-execute the task based on the clarification above."
         )
         follow_up_meta = {
-            A2ATExtension.NEGOTIATION_T.uri: "## 数据返回确认\n" + clarification + "\n",
+            A2ATExtension.NEGOTIATION_T.uri: "## Data Return Confirmation\n" + clarification + "\n",
         }
         follow_up_meta = await self._run_before_send_handlers(agent_card, follow_up, follow_up_meta)
         client = self._transport.create_a2a_client(agent_card)

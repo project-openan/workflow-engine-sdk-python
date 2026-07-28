@@ -327,7 +327,7 @@ class WorkflowEngineClient:
         # Carry the negotiation resolution as metadata under the
         # Negotiation-T URI key, per A2A-T protocol.
         follow_up_meta = {
-            A2ATExtension.NEGOTIATION_T.uri: "## \u6570\u636e\u8fd4\u56de\u786e\u8ba4\n" + clarification + "\n",
+            A2ATExtension.NEGOTIATION_T.uri: "## 数据返回确认\n" + clarification + "\n",
         }
         follow_up_meta = await self._run_before_send_handlers(agent_card, follow_up, follow_up_meta)
         ctx = context_id or self._context_id

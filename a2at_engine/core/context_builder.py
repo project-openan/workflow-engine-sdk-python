@@ -90,7 +90,7 @@ class ContextBuilder:
         if lang == "en":
             lang_hint = "\n\nPlease respond in English."
         elif lang == "zh":
-            lang_hint = "\n\n\u8bf7\u7528\u4e2d\u6587\u56de\u590d\u3002"
+            lang_hint = "\n\n请用中文回复。"
         if context_message:
             return f"{context_message}\n\n## Current Task\n{task_description}{lang_hint}"
         return f"{task_description}{lang_hint}"

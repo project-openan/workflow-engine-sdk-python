@@ -40,6 +40,7 @@ except ImportError:
 from a2at_engine.client.ssl_context import create_ssl_context
 from a2at_engine.client.auth_manager import AuthManager
 from a2at_engine.client.extension_handlers import ExtensionRegistry, ExtensionHandler
+from a2at_engine.client.protocol_logger import log_request, log_response
 from a2at_engine.client.sse_normalization import apply_sse_normalization
 from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
 from a2at_engine.control.control_points import EventCallback
@@ -82,6 +83,7 @@ class WorkflowEngineClient:
         auth_provider: Optional[AuthProvider] = None,
         max_negotiation_rounds: int = 3,
         preferred_protocol: Optional[str] = None,
+        send_timeout_seconds: int = 600,
     ):
         # Load .env file into os.environ for credential key resolution.
         if a2at_env_path:
@@ -106,10 +108,12 @@ class WorkflowEngineClient:
         self._auth_provider = auth_provider
         self._max_negotiation_rounds = max_negotiation_rounds
         self._preferred_protocol = preferred_protocol
+        self._send_timeout_seconds = send_timeout_seconds
+        self._send_timeout_seconds = send_timeout_seconds
         logger.info(
             f"[EngineClient] Initialized with {len(self._card_map)} agent(s), "
             f"ssl_verify={ssl_verify}, a2at={self._a2at_client is not None}, "
-            f"max_neg={max_negotiation_rounds}"
+            f"max_neg={max_negotiation_rounds}, send_timeout={send_timeout_seconds}s"
         )
 
     # ------------------------------------------------------------------
@@ -139,7 +143,7 @@ class WorkflowEngineClient:
             verify_server=ssl_verify, ca_certs_path=ca_certs_path
         )
         return httpx.AsyncClient(
-            timeout=httpx.Timeout(connect=60, read=60, write=60, pool=10.0),
+            timeout=httpx.Timeout(connect=60, read=self._send_timeout_seconds, write=60, pool=10.0),
             verify=ssl_ctx,
             follow_redirects=True,
         )
@@ -247,6 +251,7 @@ class WorkflowEngineClient:
             logger.error(f"[EngineClient] Agent not found: {agent_name}")
             raise RuntimeError(f"Agent not found: {agent_name}")
         logger.info(f"[EngineClient] send_message to {agent_name}: {len(message)} chars")
+        log_request(agent_name, agent_card.url if hasattr(agent_card, "url") else "?", {"message": message[:200]}, None)
         metadata = await self._run_before_send_handlers(agent_card, message, metadata)
         if self._event_callback:
             self._emit("agent_request", {"agent": agent_name, "request": message, "metadata": metadata or {}})
@@ -562,6 +567,67 @@ class WorkflowEngineClient:
             request_msg.metadata.CopyFrom(meta)
         return SendMessageRequest(message=request_msg)
 
+    async def _do_send_notification_stream(
+        self, agent_card, agent_name: str, message: str,
+        context_id: str, metadata: Dict[str, Any],
+    ) -> SendMessageResult:
+        """Long-lived SSE stream for Notification-T subscription.
+
+        Opens a background asyncio task that keeps the SSE stream open.
+        Events are forwarded to the EventCallback in real-time. The
+        returned future completes on the first event (subscribed ack)
+        or times out after 5 seconds (stream stays open in background).
+        """
+        future: asyncio.Future = asyncio.get_event_loop().create_future()
+
+        async def _stream_background():
+            try:
+                client = self._create_a2a_client(agent_card)
+                send_req = self._build_send_request(message, context_id, metadata)
+                logger.info(f"[EngineClient] Opening Notification-T long-lived stream to {agent_name}")
+                async for response in client.send_message(send_req):
+                    has_task = response.HasField("task")
+                    has_message = response.HasField("message")
+                    if has_task:
+                        task = response.task
+                        state = self._extract_task_state(task)
+                        text = self._extract_task_text(task, None)
+                        meta = self._merge_task_metadata(task, {})
+                        logger.info(f"[EngineClient] Notification-T event from {agent_name}: state={state}")
+                        self._emit(EventType.AGENT_STATUS_UPDATE, {
+                            "agent": agent_name, "state": state, "text": text or "",
+                        })
+                        if not future.done():
+                            future.set_result(SendMessageResult(
+                                text="Subscribed", task_state=state or "TASK_STATE_WORKING"))
+                    elif has_message:
+                        msg_text = self._extract_message_text(response.message, None)
+                        logger.info(f"[EngineClient] Notification-T event from {agent_name}: message")
+                        self._emit(EventType.AGENT_MESSAGE_EVENT, {
+                            "agent": agent_name, "text": msg_text or "",
+                        })
+                        if not future.done():
+                            future.set_result(SendMessageResult(
+                                text="Subscribed", task_state="TASK_STATE_WORKING"))
+                logger.info(f"[EngineClient] Notification-T stream closed for {agent_name}")
+                if not future.done():
+                    future.set_result(SendMessageResult(
+                        text="Stream closed", task_state="TASK_STATE_COMPLETED"))
+            except Exception as e:
+                msg = str(e)
+                if "connection" in msg.lower() or "closed" in msg.lower():
+                    logger.info(f"[EngineClient] Notification-T stream closed for {agent_name}")
+                else:
+                    logger.error(f"[EngineClient] Notification-T stream error for {agent_name}: {msg}")
+                if not future.done():
+                    future.set_exception(e)
+
+        asyncio.create_task(_stream_background())
+        try:
+            return await asyncio.wait_for(future, timeout=5.0)
+        except asyncio.TimeoutError:
+            logger.warning("[EngineClient] Notification-T subscription: no event in 5s, assuming active (stream stays open)")
+            return SendMessageResult(text="Subscribed (no-ack)", task_state="TASK_STATE_WORKING")
     async def _consume_stream(self, client, send_req):
         """Iterate over streaming responses, extract text/task/state/metadata.
 

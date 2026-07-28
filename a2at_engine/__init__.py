@@ -58,7 +58,7 @@ from a2at_engine.client import (
     ExtensionHandler, TaskTHandler, NegotiationTHandler,
     AuthorizationTHandler, NotificationTHandler, ExtensionRegistry,
     A2ATExtension, AuthProvider,
-    create_ssl_context, normalize_agent_dict,
+    create_ssl_context, normalize_agent_dict, StubWorkflowEngineClient, log_request, log_response,
 )
 from a2at_engine.control import ControlPoint, EventCallback, EventType
 from a2at_engine.control import NegotiationStrategy, DefaultControlPoint
@@ -76,8 +76,8 @@ __all__ = [
     "WorkflowEngineClient", "AuthManager",
     "ExtensionHandler", "TaskTHandler", "NegotiationTHandler",
     "AuthorizationTHandler", "NotificationTHandler", "ExtensionRegistry",
-    "A2ATExtension", "AuthProvider",
-    "create_ssl_context", "normalize_agent_dict",
+    "A2ATExtension", "AuthProvider", "log_request", "log_response", "StubWorkflowEngineClient",
+    "create_ssl_context", "normalize_agent_dict", "log_request", "log_response", "StubWorkflowEngineClient",
     # Control (user implements)
     "ControlPoint", "EventCallback", "EventType",
     "NegotiationStrategy", "DefaultControlPoint",

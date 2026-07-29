@@ -37,14 +37,16 @@ The SDK is structured in four layers. Each layer builds on the one below;
 each has a single responsibility and a clear entry point.
 
 ```
-Layer 2 - Orchestration     execute_psop / ExecutePsop
-   |   lifecycle, event stream, cancellation, onFinish persistence
-Layer 1 - Traversal         WorkflowExecutor
-   |   DAG walk, parallel dispatch, context assembly, routing
-Layer 0 - Communication     A2ATransport + two facades
-   |   WorkflowEngineClient (workflow send) | ExtensionSender (one-shot)
-Foundation - Decision       ControlPoint / ExtensionCallback
-                               user-implemented business decisions
+```mermaid
+graph TD
+    L2["Layer 2 - Orchestration<br/>execute_psop / ExecutePsop<br/>lifecycle, event stream, cancellation, onFinish persistence"]
+    L1["Layer 1 - Traversal<br/>WorkflowExecutor<br/>DAG walk, parallel dispatch, context assembly, routing"]
+    L0["Layer 0 - Communication<br/>A2ATransport + two facades<br/>WorkflowEngineClient (workflow send) | ExtensionSender (one-shot)"]
+    F["Foundation - Decision<br/>ControlPoint / ExtensionCallback<br/>user-implemented business decisions"]
+
+    L2 --> L1 --> L0
+    L0 -.-> F
+```
 ```
 
 ### 2.1 Layer 0 - Communication
@@ -194,11 +196,16 @@ that support lands upstream.
 ### 4.3 Extension handler chain
 
 ```
-sendMessage(agent, message)
-  -> before_send:  Task-T generates prompt, injects into metadata
-  -> transport.send (Task-T metadata on the wire)
-  -> after_receive: Negotiation-T extracts context (feeds auto-loop)
-  -> auto_negotiate loop (if INPUT_REQUIRED)
+```mermaid
+graph TD
+    SM["sendMessage(agent, message)"]
+    BS["before_send: Task-T generates prompt, injects into metadata"]
+    TS["transport.send (Task-T metadata on the wire)"]
+    AR["after_receive: Negotiation-T extracts context (feeds auto-loop)"]
+    AN["auto_negotiate loop (if INPUT_REQUIRED)"]
+
+    SM --> BS --> TS --> AR --> AN
+```
 ```
 
 `ExtensionRegistry.getHandlersForExtensions` matches an agent's declared
@@ -251,60 +258,66 @@ Events are emitted to an optional `EventCallback` as stable string types
 ### 7.1 Workflow execution with negotiation
 
 ```
-Host                 Executor              EngineClient          Agent
- |  run(workflow)      |                      |                    |
- |--------------------- >|                     |                    |
- |                     | onTask(req)           |                    |
- |                     |---------------------- >|                    |
- |                     |                       | before_send: Task-T|
- |                     |                       |------------------ >|
- |                     |                       |    send message    |
- |                     |                       |< ------------------|
- |                     |                       | after_receive:     |
- |                     |                       |  Negotiation-T     |
- |                     |                       | (INPUT_REQUIRED)   |
- |                     | <--------------------- | negotiation result |
- |                     | onNegotiation         |                    |
- |< --------------------|  (host supplies       |                    |
- |  clarification       |   clarification)      |                    |
- | -------------------- >|                      |                    |
- |                     |---------------------- >| follow-up send     |
- |                     |                       |------------------ >|
- |                     |                       |< ------------------|
- |                     | <--------------------- | final result       |
- |  ExecutionResult    |                       |                    |
- |< --------------------|                       |                    |
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant E as Executor
+    participant C as EngineClient
+    participant A as Agent
+
+    H->>E: run(workflow)
+    E->>C: onTask(req)
+    C->>A: before_send: Task-T
+    A-->>C: INPUT_REQUIRED (Negotiation-T)
+    C->>E: negotiation result
+    E->>H: onNegotiation (host supplies clarification)
+    H->>E: clarification
+    E->>C: follow-up send
+    C->>A: send follow-up
+    A-->>C: final result
+    C->>E: final result
+    E->>H: ExecutionResult
+```
 ```
 
 ### 7.2 Pre-positioning authorization
 
 ```
-Host                         ExtensionSender          Transport        Agent
- | sendAuthorization(agent)   |                          |               |
- |-------------------------- >|                          |               |
- |                            | generate prompt (SDK)    |               |
- |                            | send(instruction, auth)  |               |
- |                            |------------------------- >|               |
- |                            |                          |-------------- >|
- |                            |                          |< --------------|
- |                            | <------------------------- | auth result   |
- |< --------------------------|                          |               |
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant ES as ExtensionSender
+    participant T as Transport
+    participant A as Agent
+
+    H->>ES: sendAuthorization(agent)
+    ES->>ES: generate prompt (SDK)
+    ES->>T: send(instruction, auth)
+    T->>A: send
+    A-->>T: auth result
+    T-->>ES: auth result
+    ES-->>H: result
+```
 ```
 
 ### 7.3 Notification subscription
 
 ```
-Host                  ExtensionSender          Transport              Agent
- | sendNotification    |                         |                       |
- |-------------------- >|                        |                       |
- |                     | sendNotificationStream  |                       |
- |                     |----------------------- >|                       |
- |                     |                         | open long-lived SSE  |
- |                     |                         |---------------------- >|
- |                     |                         |< --- ack (working) ---|
- |                     | <----------------------- | first event -> future |
- |< --------------------|                         |                       |
- |                                                  (later results stream back over the same connection)
+```mermaid
+sequenceDiagram
+    participant H as Host
+    participant ES as ExtensionSender
+    participant T as Transport
+    participant A as Agent
+
+    H->>ES: sendNotification
+    ES->>T: sendNotificationStream
+    T->>A: open long-lived SSE
+    A-->>T: ack (working)
+    T-->>ES: first event -> future
+    ES-->>H: result
+    Note over T,A: later results stream back over the same connection
+```
 ```
 
 ---

@@ -221,9 +221,8 @@ class WorkflowEngineClient:
             "---\nOriginal Task:\n" + original_message + "\n\n"
             "Please re-execute the task based on the clarification above."
         )
-        follow_up_meta = {
-            A2ATExtension.NEGOTIATION_T.uri: "## Data Return Confirmation\n" + clarification + "\n",
-        }
+        follow_up_meta = await self._build_negotiation_follow_up_meta(
+            agent_name, neg_meta, clarification)
         follow_up_meta = await self._run_before_send_handlers(agent_card, follow_up, follow_up_meta)
         client = self._transport.create_a2a_client(agent_card)
         send_req = self._transport.build_send_request(follow_up, context_id, follow_up_meta)
@@ -239,6 +238,48 @@ class WorkflowEngineClient:
         r = await self._run_after_receive_handlers(agent_card, r)
         return await self._auto_negotiate(agent_card, agent_name, original_message, context_id, r, round_num + 1)
 
+    async def _build_negotiation_follow_up_meta(
+        self, agent_name, neg_meta, clarification,
+    ):
+        """Build follow-up metadata, preferring SDK continue_negotiation.
+
+        Calls a2a-t-sdk continue_negotiation to generate a structured
+        Negotiation-T payload (with DATA-NEGOTIATION-T context). Falls
+        back to manual metadata construction when the SDK is unavailable
+        or the negotiation context is missing.
+        """
+        a2at_client = self._transport.get_a2at_client()
+        if a2at_client:
+            try:
+                receive_result = neg_meta.get("negotiation_context")
+                if isinstance(receive_result, dict):
+                    context_dict = receive_result.get("context")
+                    if isinstance(context_dict, dict):
+                        from a2a_t.negotiation.common.models import (
+                            ContinueNegotiationInput, NegotiationContext,
+                        )
+                        from a2a_t.negotiation.common.enums import NegotiationStatus
+                        context = NegotiationContext.from_context(context_dict)
+                        input_obj = ContinueNegotiationInput(
+                            context=context,
+                            status=NegotiationStatus.AGREED,
+                            content_text=clarification,
+                        )
+                        payload = a2at_client.continue_negotiation(input_obj)
+                        logger.info(
+                            f"[Negotiation] SDK continue_negotiation payload "
+                            f"for '{agent_name}': round {context.round} -> AGREED"
+                        )
+                        return dict(payload)
+            except Exception as e:
+                logger.warning(
+                    f"[Negotiation] continue_negotiation failed for "
+                    f"'{agent_name}': {e}; using fallback"
+                )
+        return {
+            A2ATExtension.NEGOTIATION_T.uri:
+                "## Data Return Confirmation\n" + clarification + "\n",
+        }
     # ------------------------------------------------------------------
     # Extension handler chain
     # ------------------------------------------------------------------

@@ -240,6 +240,7 @@ class A2ATransport:
     async def consume_stream(
         self, client, send_req,
         on_intermediate: Optional[Callable[[str, Dict[str, Any]], None]] = None,
+        agent_name: str = "",
     ):
         """Iterate over streaming responses, extract text/task/state/metadata.
 
@@ -270,19 +271,70 @@ class A2ATransport:
                 if response_text is None:
                     response_text = self._text_from_metadata(last_metadata_dict)
                 if on_intermediate is not None:
+                    is_final = task_state in (
+                        "TASK_STATE_COMPLETED", "TASK_STATE_FAILED",
+                        "TASK_STATE_CANCELED", "TASK_STATE_REJECTED",
+                    )
                     on_intermediate(EventType.AGENT_STATUS_UPDATE, {
-                        "agent": getattr(task, "name", "") or "",
+                        "agent": agent_name,
                         "state": task_state,
+                        "is_final": is_final,
                         "text": response_text or "",
+                        "metadata": dict(last_metadata_dict) if last_metadata_dict else {},
                     })
+                    # Emit artifact update events for each artifact in the task
+                    for art in (task.artifacts or []):
+                        art_text = ""
+                        for part in (art.parts or []):
+                            if part.text:
+                                art_text += part.text
+                        art_meta = {}
+                        am = getattr(art, "metadata", None)
+                        if am:
+                            if isinstance(am, dict):
+                                art_meta = am
+                            else:
+                                try:
+                                    from google.protobuf.json_format import MessageToDict
+                                    art_meta = MessageToDict(am, preserving_proto_field_name=True)
+                                except Exception:
+                                    pass
+                        on_intermediate(EventType.AGENT_ARTIFACT_UPDATE, {
+                            "agent": agent_name,
+                            "artifact_id": getattr(art, "artifact_id", "") or "",
+                            "artifact_name": getattr(art, "name", "") or "",
+                            "append": getattr(art, "append", False),
+                            "last_chunk": getattr(art, "last_chunk", True),
+                            "text": art_text,
+                            "metadata": art_meta,
+                        })
             elif has_message:
                 logger.info("[Transport] Received StreamResponse with message")
-                msg_text = self._extract_message_text(response.message, None)
-                response_text = self._extract_message_text(response.message, response_text)
+                msg = response.message
+                msg_text = self._extract_message_text(msg, None)
+                response_text = self._extract_message_text(msg, response_text)
+                msg_role = ""
+                try:
+                    msg_role = type(msg).Role.Name(msg.role)
+                except Exception:
+                    msg_role = str(getattr(msg, "role", ""))
+                msg_meta = {}
+                mm = getattr(msg, "metadata", None)
+                if mm:
+                    if isinstance(mm, dict):
+                        msg_meta = mm
+                    else:
+                        try:
+                            from google.protobuf.json_format import MessageToDict
+                            msg_meta = MessageToDict(mm, preserving_proto_field_name=True)
+                        except Exception:
+                            pass
                 if on_intermediate is not None:
                     on_intermediate(EventType.AGENT_MESSAGE_EVENT, {
-                        "agent": "",
+                        "agent": agent_name,
+                        "role": msg_role,
                         "text": msg_text or "",
+                        "metadata": msg_meta,
                     })
 
         return response_text, last_task_result, last_metadata_dict, task_state

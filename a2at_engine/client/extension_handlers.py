@@ -80,11 +80,13 @@ class TaskTHandler(ExtensionHandler):
             if hasattr(prompt_result, "success") and prompt_result.success:
                 if hasattr(prompt_result, "prompt_text") and prompt_result.prompt_text:
                     metadata[task_t_uri] = prompt_result.prompt_text
-                    logger.info(f"[Task-T] Generated prompt for '{getattr(agent_card, 'name', '?')}'")
+                    logger.info(f"[Task-T] Generated prompt for '{getattr(agent_card, 'name', '?')}', {len(prompt_result.prompt_text)} chars")
+                    logger.info(f"[Task-T] Prompt content: [{prompt_result.prompt_text[:500]}{'...' if len(prompt_result.prompt_text) > 500 else ''}]")
             else:
                 failure = getattr(prompt_result, "failure", None)
                 if failure:
                     logger.warning(f"[Task-T] Prompt generation failed: {getattr(failure, 'message', '')}")
+                    logger.info(f"[Task-T] Failure detail: {failure}")
         except Exception as e:
             logger.warning(f"[Task-T] Failed: {e}")
         return metadata

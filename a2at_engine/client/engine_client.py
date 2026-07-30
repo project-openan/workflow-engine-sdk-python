@@ -154,14 +154,30 @@ class WorkflowEngineClient:
             logger.error(f"[EngineClient] Agent not found: {agent_name}")
             raise RuntimeError(f"Agent not found: {agent_name}")
         logger.info(f"[EngineClient] send_message to {agent_name}: {len(message)} chars")
-        log_request(agent_name, agent_card.url if hasattr(agent_card, "url") else "?", {"message": message[:200]}, None)
         metadata = await self._run_before_send_handlers(agent_card, message, metadata)
         self._emit(EventType.AGENT_REQUEST, {"agent": agent_name, "request": message, "metadata": metadata or {}})
         client = self._transport.create_a2a_client(agent_card)
         send_req = self._transport.build_send_request(message, context_id, metadata)
+        # Log full protocol request (endpoint + headers + body) after build, before send.
+        endpoint = "?"
+        if hasattr(agent_card, "supported_interfaces") and agent_card.supported_interfaces:
+            endpoint = agent_card.supported_interfaces[0].url or "?"
+        from google.protobuf.json_format import MessageToJson
+        try:
+            body_json = MessageToJson(send_req, ensure_ascii=False, indent=2)
+        except Exception:
+            body_json = str(send_req)
+        # Build HTTP header view: only real headers belong here, not message metadata.
+        # A2A-Extensions is derived from which extension URIs appear as metadata keys.
+        # Authorization is held by the credential service / auth interceptor at send time.
+        ext_uris = [k for k in (metadata or {}) if "tmforum.org" in k]
+        header_view = {}
+        if ext_uris:
+            header_view["A2A-Extensions"] = ",".join(ext_uris)
+        log_request(agent_name, endpoint, body_json, header_view)
 
         response_text, last_task, last_meta, task_state = (
-            await self._transport.consume_stream(client, send_req, self._emit)
+            await self._transport.consume_stream(client, send_req, self._emit, agent_name)
         )
 
         if response_text is None and last_task is not None:
@@ -227,7 +243,7 @@ class WorkflowEngineClient:
         client = self._transport.create_a2a_client(agent_card)
         send_req = self._transport.build_send_request(follow_up, context_id, follow_up_meta)
         response_text, last_task, last_meta, task_state = (
-            await self._transport.consume_stream(client, send_req, self._emit)
+            await self._transport.consume_stream(client, send_req, self._emit, agent_name)
         )
         if response_text is None and last_task is not None:
             response_text = str(last_task)

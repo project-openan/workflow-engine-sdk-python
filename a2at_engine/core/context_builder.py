@@ -83,6 +83,8 @@ class ContextBuilder:
                 parts.append(f"**Task**: {task_desc}\n**Output**: {text}\n\n")
         result = "\n".join(parts).strip()
         logger.info(f"[Context] Step {step.name}: built context ({len(result)} chars)")
+        if result:
+            logger.info(f"[Context] Content:\n{result[:2000]}")
         return result
 
     def build_task_message(self, task_description: str, context_message: str, lang: str = "zh") -> str:

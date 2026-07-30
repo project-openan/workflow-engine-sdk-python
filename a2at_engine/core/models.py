@@ -37,6 +37,13 @@ class StepType(Enum):
         """
         if not value:
             return cls.ALL_SUCCESS
+        if isinstance(value, StepType):
+            return value
+        # Handle enum objects from other modules (e.g. the orchestration
+        # center's own StepType): extract .value so str() does not produce
+        # "StepType.SELF_LOOP" which would never match.
+        if hasattr(value, "value"):
+            value = value.value
         text = str(value).strip()
         for member in cls:
             if member.value.lower() == text.lower() or member.name.lower() == text.lower():

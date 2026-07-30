@@ -18,14 +18,17 @@ from loguru import logger
 def log_request(agent_name: str, endpoint: str,
                 params: Any, headers: Optional[Dict[str, str]] = None) -> None:
     """Log an outgoing A2A request (headers + body)."""
-    try:
-        body = json.dumps(params, ensure_ascii=False, indent=2, default=str)
-    except Exception:
-        body = str(params)
+    if isinstance(params, str):
+        body = params
+    else:
+        try:
+            body = json.dumps(params, ensure_ascii=False, indent=2, default=str)
+        except Exception:
+            body = str(params)
     header_lines = []
     if headers:
         for k, v in sorted(headers.items()):
-            header_lines.append(f"  {k}: {v}")
+            header_lines.append(f"  {k}: {v if isinstance(v, str) else str(v)[:200]}")
     header_str = "\n".join(header_lines) if header_lines else "  (none)"
     logger.info(f">>> [{agent_name}] REQUEST to {endpoint}\n=== Headers ===\n{header_str}\n=== Body ===\n{body}")
 

@@ -28,7 +28,7 @@ try:
     from a2a.client import ClientConfig, ClientFactory
     from a2a.helpers import new_text_message
     from a2a.types import SendMessageRequest, TaskState
-    from google.protobuf.json_format import MessageToDict
+    from google.protobuf.json_format import MessageToDict, MessageToJson
     from google.protobuf.struct_pb2 import Struct
     _A2A_AVAILABLE = True
 except ImportError:
@@ -264,6 +264,11 @@ class A2ATransport:
                 task = response.task
                 state = self._extract_task_state(task)
                 logger.info(f"[Transport] Received StreamResponse with task: state={state or None}")
+                try:
+                    task_json = MessageToJson(task, ensuring_ascii=False, indent=2)
+                except Exception:
+                    task_json = str(task)
+                log_response(agent_name, "Task", task_json)
                 last_task_result = task
                 response_text = self._extract_task_text(task, response_text)
                 task_state = state or task_state
@@ -295,7 +300,7 @@ class A2ATransport:
                                 art_meta = am
                             else:
                                 try:
-                                    from google.protobuf.json_format import MessageToDict
+                                    from google.protobuf.json_format import MessageToDict, MessageToJson
                                     art_meta = MessageToDict(am, preserving_proto_field_name=True)
                                 except Exception:
                                     pass
@@ -311,6 +316,11 @@ class A2ATransport:
             elif has_message:
                 logger.info("[Transport] Received StreamResponse with message")
                 msg = response.message
+                try:
+                    msg_json = MessageToJson(msg, ensuring_ascii=False, indent=2)
+                except Exception:
+                    msg_json = str(msg)
+                log_response(agent_name, "Message", msg_json)
                 msg_text = self._extract_message_text(msg, None)
                 response_text = self._extract_message_text(msg, response_text)
                 msg_role = ""
@@ -325,7 +335,7 @@ class A2ATransport:
                         msg_meta = mm
                     else:
                         try:
-                            from google.protobuf.json_format import MessageToDict
+                            from google.protobuf.json_format import MessageToDict, MessageToJson
                             msg_meta = MessageToDict(mm, preserving_proto_field_name=True)
                         except Exception:
                             pass

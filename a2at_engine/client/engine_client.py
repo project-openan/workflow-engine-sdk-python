@@ -202,7 +202,7 @@ class WorkflowEngineClient:
         context_id, result, round_num,
     ) -> SendMessageResult:
         if not self._is_negotiation_needed(result) or round_num > self._max_negotiation_rounds:
-            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text})
+            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text, "metadata": result.metadata or {}})
             return result
         neg_meta = result.metadata or {}
         neg_text = neg_meta.get("negotiation_message", "") or ""
@@ -224,7 +224,7 @@ class WorkflowEngineClient:
             self._emit(EventType.NEGOTIATION_FAILED, {
                 "agent": agent_name, "round": round_num, "reason": "no clarification",
             })
-            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text})
+            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text, "metadata": result.metadata or {}})
             return result
         logger.info(f"[Negotiation] Clarification for '{agent_name}' round {round_num}: {clarification}")
         self._emit(EventType.NEGOTIATION_RESOLVED, {

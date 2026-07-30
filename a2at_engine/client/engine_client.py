@@ -148,13 +148,17 @@ class WorkflowEngineClient:
         message: str,
         context_id: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
+        skip_extensions: bool = False,
     ) -> SendMessageResult:
         agent_card = self._transport.get_card(agent_name)
         if not agent_card:
             logger.error(f"[EngineClient] Agent not found: {agent_name}")
             raise RuntimeError(f"Agent not found: {agent_name}")
         logger.info(f"[EngineClient] send_message to {agent_name}: {len(message)} chars")
-        metadata = await self._run_before_send_handlers(agent_card, message, metadata)
+        if skip_extensions:
+            logger.info(f"[EngineClient] Skipping A2A-T extensions for {agent_name} (self-loop)")
+        else:
+            metadata = await self._run_before_send_handlers(agent_card, message, metadata)
         self._emit(EventType.AGENT_REQUEST, {"agent": agent_name, "request": message, "metadata": metadata or {}})
         client = self._transport.create_a2a_client(agent_card)
         send_req = self._transport.build_send_request(message, context_id, metadata)
@@ -190,6 +194,9 @@ class WorkflowEngineClient:
             metadata=last_meta,
             task_state=task_state,
         )
+        if skip_extensions:
+            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text, "metadata": result.metadata or {}})
+            return result
         result = await self._run_after_receive_handlers(agent_card, result)
         return await self._auto_negotiate(agent_card, agent_name, message, context_id, result, 1)
 

@@ -163,6 +163,11 @@ class AuthorizationTHandler(ExtensionHandler):
                             control_point=None, extension_callback=None,
                             event_callback=None):
         auth_request = result.metadata.get("Authorization-T") if result.metadata else None
+        if not auth_request and result.metadata:
+            for k, v in result.metadata.items():
+                if isinstance(k, str) and "Authorization-T" in k:
+                    auth_request = v
+                    break
         if not auth_request or not extension_callback:
             return result
         agent_name = getattr(agent_card, "name", "")

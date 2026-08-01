@@ -76,12 +76,13 @@ class TaskTHandler(ExtensionHandler):
             logger.info(f"[Task-T] Metadata already preset, skipping generation")
             return metadata
         try:
-            prompt_result = a2at_client.generate_task_prompt(message_text)
+            import asyncio
+            prompt_result = await asyncio.to_thread(a2at_client.generate_task_prompt, message_text)
             if hasattr(prompt_result, "success") and prompt_result.success:
                 if hasattr(prompt_result, "prompt_text") and prompt_result.prompt_text:
                     metadata[task_t_uri] = prompt_result.prompt_text
                     logger.info(f"[Task-T] Generated prompt for '{getattr(agent_card, 'name', '?')}', {len(prompt_result.prompt_text)} chars")
-                    logger.info(f"[Task-T] Prompt content: [{prompt_result.prompt_text[:500]}{'...' if len(prompt_result.prompt_text) > 500 else ''}]")
+                    logger.debug(f"[Task-T] Prompt content: [{prompt_result.prompt_text}]")
             else:
                 failure = getattr(prompt_result, "failure", None)
                 if failure:
@@ -115,7 +116,9 @@ class NegotiationTHandler(ExtensionHandler):
         if context_map is None:
             context_map = metadata
         try:
-            receive_result = a2at_client.receive_negotiation(message=result.text, context=context_map)
+            import asyncio as _aio
+            receive_result = await _aio.to_thread(
+                a2at_client.receive_negotiation, message=result.text, context=context_map)
             if receive_result.get("needResponse", False):
                 result.metadata["negotiation_message"] = receive_result.get("message", "")
                 result.metadata["negotiation_context"] = receive_result

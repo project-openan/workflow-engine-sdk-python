@@ -178,7 +178,8 @@ class WorkflowExecutor:
                                     description=task.description,
                                     context=context_message, step_name=step.name, subtask_index=subtask_index)
             self._emit_event("task_request", {"step": step.name, "agent": task.agent, "task": task.description})
-            logger.info(f"[Executor] Dispatching task to agent {task.agent}: {task.description[:80]}")
+            logger.info(f"[Executor] Dispatching task: step={step.name}, agent={task.agent}, subtask_index={subtask_index}, desc={task.description}")
+            logger.debug(f"[Executor] Task message to {task.agent}: [{task_message}]")
             try:
                 # SELF_LOOP steps are handled locally without sending an
                 # A2A-T message (mirrors Java dispatchTask SELF_LOOP branch).
@@ -191,6 +192,8 @@ class WorkflowExecutor:
                 self._emit_event("task_status_changed", {"step": step.name, "subtask_index": subtask_index, "agent": task.agent, "status": task.status.value})
                 status = "success" if response.success else "failed"
                 logger.info(f"[Executor] Task {task.description[:60]} -> {task.agent}: {status}")
+                if response.success and response.output:
+                    logger.debug(f"[Executor] Task output from {task.agent}: [{response.output}]")
                 self.execution_history.append({"step": step.name, "task": task.description, "agent": task.agent,
                     "status": status,
                     "output": response.output if response.success else (response.error or "")})

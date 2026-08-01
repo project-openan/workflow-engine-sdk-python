@@ -159,6 +159,7 @@ class WorkflowEngineClient:
             logger.info(f"[EngineClient] Skipping A2A-T extensions for {agent_name} (self-loop)")
         else:
             metadata = await self._run_before_send_handlers(agent_card, message, metadata)
+        logger.info(f"[EngineClient] Emitting agent_request for {agent_name}")
         self._emit(EventType.AGENT_REQUEST, {"agent": agent_name, "request": message, "metadata": metadata or {}})
         client = self._transport.create_a2a_client(agent_card)
         send_req = self._transport.build_send_request(message, context_id, metadata)
@@ -288,7 +289,7 @@ class WorkflowEngineClient:
                             status=NegotiationStatus.AGREED,
                             content_text=clarification,
                         )
-                        payload = a2at_client.continue_negotiation(input_obj)
+                        payload = await asyncio.to_thread(a2at_client.continue_negotiation, input_obj)
                         logger.info(
                             f"[Negotiation] SDK continue_negotiation payload "
                             f"for '{agent_name}': round {context.round} -> AGREED"

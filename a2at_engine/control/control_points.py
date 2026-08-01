@@ -37,6 +37,7 @@ EventCallback is optional; instantiate directly as a no-op sink or subclass.
 
 from abc import ABC, abstractmethod
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from loguru import logger
 
 if TYPE_CHECKING:
     from a2at_engine.client.engine_client import WorkflowEngineClient
@@ -223,11 +224,21 @@ class DefaultControlPoint(ControlPoint):
         self._negotiation_strategy = negotiation_strategy
 
     async def on_task(self, request: TaskRequest, engine_client: "WorkflowEngineClient") -> TaskResponse:
-        result = await engine_client.send_message(request.agent_name, request.message)
-        success = bool(result.text)
-        return TaskResponse(success=success, output=result.text)
+        logger.info(f"[DefaultCP] onTask: agent={request.agent_name}, step={request.step_name}")
+        try:
+            result = await engine_client.send_message(request.agent_name, request.message)
+            success = bool(result.text)
+            logger.info(
+                f"[DefaultCP] Response from {request.agent_name}: "
+                f"{len(result.text or '')} chars, success={success}"
+            )
+            return TaskResponse(success=success, output=result.text or "")
+        except Exception as e:
+            logger.error(f"[DefaultCP] Task failed for {request.agent_name}: {e}")
+            return TaskResponse(success=False, error=f"Agent call failed: {e}")
 
     async def on_self_task(self, request: TaskRequest) -> TaskResponse:
+        logger.info(f"[DefaultCP] onSelfTask: step={request.step_name}, agent={request.agent_name} (local, no A2A-T)")
         return TaskResponse(success=True, output=request.message)
 
     async def on_route(self, step_name: str, results: Dict[str, Any],
@@ -237,6 +248,7 @@ class DefaultControlPoint(ControlPoint):
             if jc.step not in ("end", "retry", "endNode"):
                 next_step = jc.step
                 break
+        logger.info(f"[DefaultCP] onRoute: {step_name} -> {next_step}")
         return RouteDecision(next_step=next_step, reason="default: first non-terminal branch")
 
     async def on_negotiation(self, agent_name: str, negotiation_text: str,
@@ -244,6 +256,7 @@ class DefaultControlPoint(ControlPoint):
         if self._negotiation_strategy is not None:
             return await self._negotiation_strategy.resolve(
                 agent_name, negotiation_text, receive_result)
+        logger.info(f"[DefaultCP] onNegotiation: agent={agent_name}, concern={negotiation_text}")
         return "Please proceed with the original task using available information."
 
 

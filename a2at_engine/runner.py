@@ -220,6 +220,8 @@ async def execute_psop(
                 continue
             try:
                 transformed = on_event(event)
+                if asyncio.iscoroutine(transformed):
+                    transformed = await transformed
             except Exception as e:
                 logger.warning(f"[execute_psop] on_event raised: {e}")
                 transformed = event

@@ -30,6 +30,7 @@ that only need pre-positioning hold that lighter facade instead.
 
 import uuid
 import asyncio
+import time
 from typing import Dict, Any, List, Optional, Callable, Union, Awaitable
 from loguru import logger
 
@@ -166,6 +167,7 @@ class WorkflowEngineClient:
         metadata: Optional[Dict[str, Any]] = None,
         skip_extensions: bool = False,
     ) -> SendMessageResult:
+        t_total = time.time()
         agent_card = self._transport.get_card(agent_name)
         if not agent_card:
             logger.error(f"[EngineClient] Agent not found: {agent_name}")
@@ -174,7 +176,9 @@ class WorkflowEngineClient:
         if skip_extensions:
             logger.info(f"[EngineClient] Skipping A2A-T extensions for {agent_name} (self-loop)")
         else:
+            t_ext = time.time()
             metadata = await self._run_before_send_handlers(agent_card, message, metadata)
+            logger.info(f"[Timing] Extensions before_send for {agent_name}: {time.time()-t_ext:.2f}s")
         logger.info(f"[EngineClient] Emitting agent_request for {agent_name}")
         self._emit(EventType.AGENT_REQUEST, {"agent": agent_name, "request": message, "metadata": metadata or {}})
         client = self._transport.create_a2a_client(agent_card)
@@ -195,11 +199,15 @@ class WorkflowEngineClient:
         header_view = {}
         if ext_uris:
             header_view["A2A-Extensions"] = ",".join(ext_uris)
+        if agent_card.security_schemes and agent_card.security_requirements:
+            header_view["Authorization"] = "Bearer <injected-by-interceptor-at-send-time>"
         log_request(agent_name, endpoint, body_json, header_view)
 
+        t_stream = time.time()
         response_text, last_task, last_meta, task_state = (
             await self._transport.consume_stream(client, send_req, self._forward_intermediate_event, agent_name)
         )
+        logger.info(f"[Timing] A2A stream for {agent_name}: {time.time()-t_stream:.2f}s")
 
         if response_text is None and last_task is not None:
             response_text = str(last_task)
@@ -213,9 +221,12 @@ class WorkflowEngineClient:
         )
         if skip_extensions:
             self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text, "metadata": result.metadata or {}})
+            logger.info(f"[Timing] send_message to {agent_name} total: {time.time()-t_total:.2f}s")
             return result
         result = await self._run_after_receive_handlers(agent_card, result)
-        return await self._auto_negotiate(agent_card, agent_name, message, context_id, result, 1)
+        result = await self._auto_negotiate(agent_card, agent_name, message, context_id, result, 1)
+        logger.info(f"[Timing] send_message to {agent_name} total: {time.time()-t_total:.2f}s")
+        return result
 
     # ------------------------------------------------------------------
     # Auto-negotiation (integrated into send_message)
@@ -266,9 +277,12 @@ class WorkflowEngineClient:
         follow_up_meta = await self._run_before_send_handlers(agent_card, follow_up, follow_up_meta)
         client = self._transport.create_a2a_client(agent_card)
         send_req = self._transport.build_send_request(follow_up, context_id, follow_up_meta)
+        t_neg_stream = time.time()
+        logger.info(f"[Timing] Negotiation round {round_num} A2A stream to {agent_name}: starting")
         response_text, last_task, last_meta, task_state = (
             await self._transport.consume_stream(client, send_req, self._forward_intermediate_event, agent_name)
         )
+        logger.info(f"[Timing] Negotiation round {round_num} A2A stream to {agent_name}: {time.time()-t_neg_stream:.2f}s")
         if response_text is None and last_task is not None:
             response_text = str(last_task)
         r = SendMessageResult(

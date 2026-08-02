@@ -18,6 +18,7 @@
 """WorkflowExecutor - DAG traversal, delegates to ControlPoint."""
 
 import asyncio
+import time
 from collections import deque
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from loguru import logger
@@ -137,6 +138,7 @@ class WorkflowExecutor:
         Returns (step_name, step_result, success, next_indices).
         """
         step = self.workflow.steps[idx]
+        t_step = time.time()
         logger.info(f"--- Executing step: {step.name} ---")
         self._emit_event("step_start", {"step": step.name})
         step_result, success = await self._execute_subtasks(step)
@@ -148,6 +150,7 @@ class WorkflowExecutor:
         else:
             logger.error(f"Step {step.name} failed, stopping.")
             self._emit_event("error", {"step": step.name, "results": step_result})
+        logger.info(f"[Timing] Step '{step.name}' total: {time.time()-t_step:.2f}s, success={success}")
         return step.name, step_result, success, next_indices
 
     def _process_results(self, ready: List[int], results: list,
@@ -180,6 +183,7 @@ class WorkflowExecutor:
             self._emit_event("task_request", {"step": step.name, "agent": task.agent, "task": task.description})
             logger.info(f"[Executor] Dispatching task: step={step.name}, agent={task.agent}, subtask_index={subtask_index}, desc={task.description}")
             logger.debug(f"[Executor] Task message to {task.agent}: [{task_message}]")
+            t_task = time.time()
             try:
                 # SELF_LOOP steps are handled locally without sending an
                 # A2A-T message (mirrors Java dispatchTask SELF_LOOP branch).
@@ -188,6 +192,7 @@ class WorkflowExecutor:
                     response = await self.control_point.on_self_task(request)
                 else:
                     response = await self.control_point.on_task(request, self.engine_client)
+                logger.info(f"[Timing] Task '{task.description}' -> {task.agent}: {time.time()-t_task:.2f}s")
                 task.status = TaskStatus.SUCCESS if response.success else TaskStatus.FAILED
                 self._emit_event("task_status_changed", {"step": step.name, "subtask_index": subtask_index, "agent": task.agent, "status": task.status.value})
                 status = "success" if response.success else "failed"
@@ -201,6 +206,7 @@ class WorkflowExecutor:
                     "output": response.output if response.success else (response.error or "")})
                 return task.description, response.output, response.success
             except Exception as e:
+                logger.info(f"[Timing] Task '{task.description}' -> {task.agent}: {time.time()-t_task:.2f}s (failed)")
                 task.status = TaskStatus.FAILED
                 self._emit_event("task_status_changed", {"step": step.name, "subtask_index": subtask_index, "agent": task.agent, "status": task.status.value})
                 logger.error(f"[Executor] Task {task.description[:60]} -> {task.agent}: exception: {e}")

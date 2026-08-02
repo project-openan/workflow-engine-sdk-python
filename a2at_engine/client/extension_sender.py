@@ -16,6 +16,7 @@ pre-position is not forced to hold a workflow-machinery facade.
 """
 
 from typing import Dict, Any, Optional
+import asyncio
 from loguru import logger
 
 from a2at_engine.client.a2a_transport import A2ATransport
@@ -52,7 +53,9 @@ class ExtensionSender:
         agent_card = self._transport.get_card(agent_name)
         if not agent_card:
             raise RuntimeError(f"Agent not found: {agent_name}")
-        metadata_value = self._generate_extension_prompt(extension, natural_language_input)
+        metadata_value = await asyncio.to_thread(
+            self._generate_extension_prompt, extension, natural_language_input
+        )
         if not metadata_value:
             metadata_value = natural_language_input
             logger.info(f"[ExtensionSender] SDK prompt generation unavailable for {agent_name} ({extension.display_name}), using input as metadata")

@@ -105,6 +105,22 @@ class WorkflowEngineClient:
         if self._event_callback:
             self._event_callback.on_event(event_type, data)
 
+    def _forward_intermediate_event(self, event_type: str, data: Dict[str, Any]):
+        """Forward intermediate SSE events with structured logging (mirrors Java forwardIntermediateEvent)."""
+        agent = data.get("agent", "?")
+        if event_type == EventType.AGENT_STATUS_UPDATE:
+            state = data.get("state", "")
+            is_final = data.get("is_final", False)
+            logger.info(f"[EngineClient] Agent {agent} status update: {state} (final={is_final})")
+        elif event_type == EventType.AGENT_ARTIFACT_UPDATE:
+            art_name = data.get("artifact_name", "")
+            art_id = data.get("artifact_id", "")
+            logger.info(f"[EngineClient] Agent {agent} artifact update: {art_name} ({art_id})")
+        elif event_type == EventType.AGENT_MESSAGE_EVENT:
+            text = data.get("text", "")
+            logger.info(f"[EngineClient] Agent {agent} message event: {len(text)} chars")
+        self._emit(event_type, data)
+
     def register_handler(self, handler: ExtensionHandler):
         self._extension_registry.register(handler)
 
@@ -182,7 +198,7 @@ class WorkflowEngineClient:
         log_request(agent_name, endpoint, body_json, header_view)
 
         response_text, last_task, last_meta, task_state = (
-            await self._transport.consume_stream(client, send_req, self._emit, agent_name)
+            await self._transport.consume_stream(client, send_req, self._forward_intermediate_event, agent_name)
         )
 
         if response_text is None and last_task is not None:
@@ -251,7 +267,7 @@ class WorkflowEngineClient:
         client = self._transport.create_a2a_client(agent_card)
         send_req = self._transport.build_send_request(follow_up, context_id, follow_up_meta)
         response_text, last_task, last_meta, task_state = (
-            await self._transport.consume_stream(client, send_req, self._emit, agent_name)
+            await self._transport.consume_stream(client, send_req, self._forward_intermediate_event, agent_name)
         )
         if response_text is None and last_task is not None:
             response_text = str(last_task)
@@ -331,7 +347,7 @@ class WorkflowEngineClient:
             result = await handler.after_receive(
                 agent_card, result,
                 self._transport.get_a2at_client(), self._control_point,
-                self._event_callback,
+                self._extension_callback, self._event_callback,
             )
         return result
 

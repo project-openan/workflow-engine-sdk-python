@@ -34,7 +34,7 @@ from a2at_engine.client.auth_manager import AuthProviderInterceptor
 from a2at_engine.client.extension_interceptor import ExtensionInterceptor
 from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
 
-from a2at_engine.client.protocol_logger import log_request, log_response
+from a2at_engine.client.protocol_logger import log_request, log_response, log_response_event
 from a2at_engine.client.stub_engine_client import StubWorkflowEngineClient
 
 __all__ = [
@@ -45,5 +45,5 @@ __all__ = [
     "CustomAuthInterceptor", "ExtensionInterceptor", "normalize_agent_dict",
     "A2ATExtension", "encrypt", "decrypt_if_needed", "load_to_environ",
     "AuthProvider", "AuthProviderInterceptor",
-    "log_request", "log_response", "StubWorkflowEngineClient",
+    "log_request", "log_response", "log_response_event", "StubWorkflowEngineClient",
 ]

@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "a2at-engine"
-version = "0.3.5"
+version = "1.0.1"
 description = "Standalone workflow execution SDK for A2A-T multi-agent orchestration"
 readme = "README.md"
 license = "Apache-2.0"
 license-files = ["LICENSE"]
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 authors = [
     { name = "A2A SDK Team", email = "ivo.zhou@huawei.com" },
 ]

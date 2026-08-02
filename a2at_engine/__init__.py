@@ -66,7 +66,8 @@ from a2at_engine.client import (
     ExtensionHandler, TaskTHandler, NegotiationTHandler,
     AuthorizationTHandler, NotificationTHandler, ExtensionRegistry,
     A2ATExtension, AuthProvider,
-    create_ssl_context, normalize_agent_dict, StubWorkflowEngineClient, log_request, log_response,
+    create_ssl_context, normalize_agent_dict, StubWorkflowEngineClient,
+    log_request, log_response, log_response_event,
 )
 from a2at_engine.control import ControlPoint, EventCallback, EventType
 from a2at_engine.control import (
@@ -87,8 +88,8 @@ __all__ = [
     "WorkflowEngineClient", "A2ATransport", "ExtensionSender", "AuthManager",
     "ExtensionHandler", "TaskTHandler", "NegotiationTHandler",
     "AuthorizationTHandler", "NotificationTHandler", "ExtensionRegistry",
-    "A2ATExtension", "AuthProvider", "log_request", "log_response", "StubWorkflowEngineClient",
-    "create_ssl_context", "normalize_agent_dict", "log_request", "log_response", "StubWorkflowEngineClient",
+    "A2ATExtension", "AuthProvider", "log_request", "log_response", "log_response_event", "StubWorkflowEngineClient",
+    "create_ssl_context", "normalize_agent_dict",
     # Control (user implements)
     "ControlPoint", "EventCallback", "EventType",
     "NegotiationStrategy", "DefaultControlPoint",
@@ -99,4 +100,4 @@ __all__ = [
     "execute_psop",
 ]
 
-__version__ = "1.0.0"
+__version__ = "1.0.1"

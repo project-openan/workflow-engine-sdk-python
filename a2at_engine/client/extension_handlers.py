@@ -92,7 +92,7 @@ class TaskTHandler(ExtensionHandler):
             logger.warning(f"[Task-T] Failed: {e}")
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
+    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, extension_callback=None, event_callback=None):
         return result
 
 
@@ -102,7 +102,7 @@ class NegotiationTHandler(ExtensionHandler):
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
+    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, extension_callback=None, event_callback=None):
         if not a2at_client:
             return result
         if not result.task_state or "INPUT_REQUIRED" not in result.task_state:

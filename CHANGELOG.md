@@ -5,6 +5,24 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.0.1] - 2026-08-02
+
+### Fixed
+- **`after_receive` signature alignment**: `TaskTHandler` and `NegotiationTHandler`
+  `after_receive` now accept the full 6-parameter signature
+  (`agent_card, result, a2at_client, control_point, extension_callback, event_callback`),
+  matching `AuthorizationTHandler`, `NotificationTHandler`, and the Java SDK
+- **`_run_after_receive_handlers`**: now passes `extension_callback` to all handlers
+  (previously only passed `event_callback`, causing `AuthorizationTHandler` /
+  `NotificationTHandler` to silently skip authorization/notification processing)
+
+### Added
+- **`log_response_event()`**: structured SSE response event logger in `protocol_logger.py`,
+  mirroring Java's `ProtocolLogger.logResponseEvent()` for protocol-level debugging
+- **`_forward_intermediate_event()`**: structured logging for intermediate SSE events
+  (`AGENT_STATUS_UPDATE`, `AGENT_ARTIFACT_UPDATE`, `AGENT_MESSAGE_EVENT`) in
+  `WorkflowEngineClient`, mirroring Java's `forwardIntermediateEvent()`
+
 ## [1.0.0] - 2026-07-28
 
 First public release. The SDK ships a clean transport-facade architecture with

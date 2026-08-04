@@ -42,7 +42,7 @@ graph TD
     L2["Layer 2 - Orchestration<br/>execute_psop / ExecutePsop<br/>lifecycle, event stream, cancellation, onFinish persistence"]
     L1["Layer 1 - Traversal<br/>WorkflowExecutor<br/>DAG walk, parallel dispatch, context assembly, routing"]
     L0["Layer 0 - Communication<br/>A2ATransport + two facades<br/>WorkflowEngineClient (workflow send) | ExtensionSender (one-shot)"]
-    F["Foundation - Decision<br/>ControlPoint / ExtensionCallback<br/>user-implemented business decisions"]
+    F["Foundation - Decision<br/>ControlPoint<br/>user-implemented business decisions"]
 
     L2 --> L1 --> L0
     L0 -.-> F
@@ -65,9 +65,8 @@ responsibility:**
 
 - **`WorkflowEngineClient`** - the workflow execution send path. Owns Task-T
   prompt generation (before send), the Negotiation-T auto-loop (after
-  receive), the global `EventCallback`, and the `ControlPoint` /
-  `ExtensionCallback` wiring. This is the facade the executor calls during
-  workflow execution.
+  receive), the global `EventCallback`, and the `ControlPoint` wiring.
+  This is the facade the executor calls during workflow execution.
 - **`ExtensionSender`** - one-shot pre-positioning. Sends Authorization-T
   and Notification-T messages to agents *before* the workflow starts. It
   bypasses Task-T generation and the negotiation loop and does not emit
@@ -128,26 +127,8 @@ auto-negotiate loop and makes exactly one decision:
 | `onRoute` | executor | Choose a branch at a conditional step |
 | `onNegotiation` | client auto-loop | Supply clarification on INPUT_REQUIRED |
 
-### 3.2 ExtensionCallback - reactive hooks
-
-Reacts to agent-pushed A2A-T data. These are distinct from flow decisions:
-they respond to peer-initiated extension traffic rather than driving the
-workflow forward.
-
-| Method | Fires when | Decision |
-|---|---|---|
-| `onAuthorization` | an agent pushes an Authorization-T request in a task response | Approve or deny |
-| `onNotification` | an agent pushes a Notification-T payload in a task response | Handle the notification |
-
-#### Why split ControlPoint and ExtensionCallback?
-
-Mixing reactive hooks onto the flow-decision interface couples two
-different call sites and two different responsibilities. `onTask` and
-`onRoute` are called by the executor as it walks the DAG; `onAuthorization`
-and `onNotification` are called by extension handlers reacting to
-agent-pushed data. Keeping them on separate interfaces means a host that
-only cares about routing does not have to implement (or stub) authorization
-hooks, and vice versa.
+Authorization-T and Notification-T are pre-positioning concerns handled
+via `ExtensionSender` before the workflow starts, not in-workflow callbacks.
 
 ---
 
@@ -329,7 +310,6 @@ mapping:
 | SSL/TLS | `client/ssl_context.py` | `client/SslContextFactory` |
 | SSE normalization | `client/sse_normalization.py` | `client/SseNormalization` |
 | Flow decisions | `control/control_points.py` | `control/ControlPoint`, `DefaultControlPoint` |
-| Reactive hooks | `control/control_points.py` | `control/ExtensionCallback` |
 | Events | `control/control_points.py` (`EventType`) | `control/EventType`, `EventCallback` |
 | DAG traversal | `core/executor.py` | `core/WorkflowExecutor` |
 | Context assembly | `core/context_builder.py` | `core/ContextBuilder` |
@@ -360,16 +340,11 @@ The orchestration center consumes the Python SDK as a library.
 ## 10. Design Decisions Summary
 
 1. **Shared transport, two facades** - wire machinery written once on
-   `A2ATransport`; `WorkflowEngineClient` and `ExtensionSender` each own one
-   orchestration concern and delegate wire work. Avoids both forced-facade
-   coupling and wire-code duplication.
+    `A2ATransport`; `WorkflowEngineClient` and `ExtensionSender` each own one
+    orchestration concern and delegate wire work. Avoids both forced-facade
+    coupling and wire-code duplication.
 
-2. **ControlPoint / ExtensionCallback split** - flow decisions and reactive
-   hooks have different call sites and responsibilities; separating them
-   keeps each interface cohesive and lets hosts implement only what they
-   need.
-
-3. **In-workflow vs pre-positioning extensions** - Task-T and Negotiation-T
+2. **In-workflow vs pre-positioning extensions** - Task-T and Negotiation-T
    are part of the `sendMessage` chain; Authorization-T and Notification-T
    are one-shot sends before the workflow. The registry auto-registers only
    the in-workflow pair.

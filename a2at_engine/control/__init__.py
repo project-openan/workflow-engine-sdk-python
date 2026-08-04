@@ -17,10 +17,10 @@
 
 
 from a2at_engine.control.control_points import (
-    ControlPoint, ExtensionCallback, DefaultExtensionCallback,
+    ControlPoint,
     EventCallback, EventType, NegotiationStrategy, DefaultControlPoint,
 )
 
-__all__ = ["ControlPoint", "ExtensionCallback", "DefaultExtensionCallback",
+__all__ = ["ControlPoint",
            "EventCallback", "EventType",
            "NegotiationStrategy", "DefaultControlPoint"]

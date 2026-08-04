@@ -21,21 +21,21 @@ A shared transport with two single-responsibility facades:
 ```
 A2ATransport (shared wire: httpx + auth + agent-card map + SSE consumer)
   |-- WorkflowEngineClient (workflow facade: Task-T generation, Negotiation-T
-  |                          auto-loop, event callback, ControlPoint/ExtensionCallback)
+  |                          auto-loop, event callback, ControlPoint)
   `-- ExtensionSender (one-shot facade: Authorization-T / Notification-T)
 ```
 
-The decision layer is split into two interfaces:
+The decision layer interface:
 
 - **ControlPoint** -- flow decisions (`on_task` / `on_self_task` / `on_route` / `on_negotiation`)
-- **ExtensionCallback** -- reactive hooks for agent-pushed A2A-T data (`on_authorization` / `on_notification`)
+
+Authorization-T and Notification-T are pre-positioning operations sent via `ExtensionSender` before the workflow starts, not in-workflow callbacks.
 
 ```mermaid
 flowchart TB
     subgraph User["User (Host Agent)"]
         AC["AgentCards<br/>(registry or custom)"]
         CP["ControlPoint<br/>flow decisions"]
-        ECB["ExtensionCallback<br/>auth/notification"]
     end
     subgraph SDK["SDK (self-contained)"]
         TR["A2ATransport<br/>shared wire"]
@@ -55,7 +55,6 @@ flowchart TB
     ES -->|pre-position send| A1
     WE -->|on_task/on_route| CP
     WEC -->|on_negotiation| CP
-    WEC -->|on_authorization/on_notification| ECB
 ```
 
 ## Quick Start
@@ -270,7 +269,7 @@ workflow-exec-engine/
     |   |-- ssl_context.py
     |   `-- sse_normalization.py
     |-- control/            # decision interfaces
-    |   `-- control_points.py    # ControlPoint + ExtensionCallback + EventType
+    |   `-- control_points.py    # ControlPoint + EventType
     `-- registry/           # registry integration (optional)
         `-- registry_client.py
 ```

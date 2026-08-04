@@ -28,7 +28,6 @@ class StubWorkflowEngineClient:
         self.sent: List[tuple] = []
         self._control_point = None
         self._event_callback = None
-        self._extension_callback = None
 
     async def send_message(self, agent_name: str, message: str,
                            context_id: Optional[str] = None,
@@ -39,9 +38,6 @@ class StubWorkflowEngineClient:
 
     def set_control_point(self, control_point):
         self._control_point = control_point
-
-    def set_extension_callback(self, extension_callback):
-        self._extension_callback = extension_callback
 
     def set_event_callback(self, callback):
         self._event_callback = callback

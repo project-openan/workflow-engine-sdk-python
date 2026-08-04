@@ -21,8 +21,7 @@ from a2at_engine.client.a2a_transport import A2ATransport
 from a2at_engine.client.extension_sender import ExtensionSender
 from a2at_engine.client.auth_manager import AuthManager
 from a2at_engine.client.extension_handlers import (
-    ExtensionHandler, TaskTHandler, NegotiationTHandler,
-    AuthorizationTHandler, NotificationTHandler, ExtensionRegistry,
+    ExtensionHandler, TaskTHandler, NegotiationTHandler, ExtensionRegistry,
 )
 from a2at_engine.client.ssl_context import create_ssl_context
 from a2at_engine.client.credential_service import AgentCredentialService, AgentAuthManager, CustomAuthInterceptor
@@ -39,8 +38,7 @@ from a2at_engine.client.stub_engine_client import StubWorkflowEngineClient
 
 __all__ = [
     "WorkflowEngineClient", "A2ATransport", "ExtensionSender", "AuthManager",
-    "ExtensionHandler", "TaskTHandler", "NegotiationTHandler",
-    "AuthorizationTHandler", "NotificationTHandler", "ExtensionRegistry",
+    "ExtensionHandler", "TaskTHandler", "NegotiationTHandler", "ExtensionRegistry",
     "create_ssl_context", "AgentCredentialService", "AgentAuthManager",
     "CustomAuthInterceptor", "ExtensionInterceptor", "normalize_agent_dict",
     "A2ATExtension", "encrypt", "decrypt_if_needed", "load_to_environ",

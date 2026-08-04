@@ -310,7 +310,6 @@ All behaviors match. Both report healthy state, no recovery needed.
 - [x] ExtensionHandler: match
 - [x] TaskTHandler: all behaviors match
 - [x] NegotiationTHandler: all behaviors match
-- [x] AuthorizationTHandler, NotificationTHandler: match
 - [x] ExtensionRegistry: match
 - [x] ExtensionInterceptor: filter active extensions
 - [x] A2ATExtension: 4 URIs match

@@ -20,21 +20,21 @@
 
 ```
 A2ATransport（共享通信层：httpx + 认证 + AgentCard 映射 + SSE 消费）
-  ├── WorkflowEngineClient（工作流发送门面：Task-T 生成、Negotiation-T 自动循环、事件回调、ControlPoint/ExtensionCallback 装配）
+  ├── WorkflowEngineClient（工作流发送门面：Task-T 生成、Negotiation-T 自动循环、事件回调、ControlPoint 装配）
   └── ExtensionSender（一次性预置门面：Authorization-T / Notification-T 发送）
 ```
 
-决策层拆分为两个接口：
+决策层接口：
 
 - **ControlPoint** — 流程决策（`on_task` / `on_self_task` / `on_route` / `on_negotiation`）
-- **ExtensionCallback** — 被动响应 Agent 推送的 A2A-T 数据（`on_authorization` / `on_notification`）
+
+Authorization-T 和 Notification-T 是预置操作，在工作流启动前通过 `ExtensionSender` 单向下发，不在工作流执行中回调。
 
 ```mermaid
 flowchart TB
     subgraph User["用户（宿主 Agent）"]
         AC["AgentCards<br/>（注册中心或自定义来源）"]
         CP["ControlPoint<br/>流程决策"]
-        ECB["ExtensionCallback<br/>授权/通知"]
     end
     subgraph SDK["SDK（自包含）"]
         TR["A2ATransport<br/>共享通信层"]
@@ -54,7 +54,6 @@ flowchart TB
     ES -->|预置发送| A1
     WE -->|on_task/on_route| CP
     WEC -->|on_negotiation| CP
-    WEC -->|on_authorization/on_notification| ECB
 ```
 
 ## 快速开始
@@ -270,7 +269,7 @@ workflow-exec-engine/
     │   ├── ssl_context.py
     │   └── sse_normalization.py
     ├── control/            # 决策接口
-    │   └── control_points.py    # ControlPoint + ExtensionCallback + EventType
+    │   └── control_points.py    # ControlPoint + EventType
     └── registry/           # 注册中心集成（可选）
         └── registry_client.py
 ```

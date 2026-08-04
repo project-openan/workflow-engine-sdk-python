@@ -22,9 +22,8 @@ generates the structured task prompt on send; Negotiation-T extracts the
 negotiation context on receive and feeds the auto-loop.
 
 Authorization-T and Notification-T are pre-positioning concerns handled
-once before the workflow starts via ExtensionSender, so they are not part
-of this chain. Their handler classes are retained for callers that need
-inline (in-workflow) handling of agent-pushed data.
+once before the workflow starts via ExtensionSender, not part of this
+in-workflow handler chain.
 """
 
 from abc import ABC, abstractmethod
@@ -32,7 +31,7 @@ from typing import Any, Dict, Optional, List, TYPE_CHECKING
 from loguru import logger
 
 if TYPE_CHECKING:
-    from a2at_engine.control.control_points import ControlPoint, ExtensionCallback
+    from a2at_engine.control.control_points import ControlPoint
 
 from a2at_engine.core.models import SendMessageResult
 
@@ -47,8 +46,7 @@ class ExtensionHandler(ABC):
 
     @abstractmethod
     async def after_receive(self, agent_card, result, a2at_client=None,
-                            control_point=None, extension_callback=None,
-                            event_callback=None) -> SendMessageResult:
+                            control_point=None, event_callback=None) -> SendMessageResult:
         ...
 
 
@@ -92,7 +90,7 @@ class TaskTHandler(ExtensionHandler):
             logger.warning(f"[Task-T] Failed: {e}")
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, extension_callback=None, event_callback=None):
+    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
         return result
 
 
@@ -102,7 +100,7 @@ class NegotiationTHandler(ExtensionHandler):
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
         return metadata
 
-    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, extension_callback=None, event_callback=None):
+    async def after_receive(self, agent_card, result, a2at_client=None, control_point=None, event_callback=None):
         if not a2at_client:
             return result
         if not result.task_state or "INPUT_REQUIRED" not in result.task_state:
@@ -154,78 +152,6 @@ class NegotiationTHandler(ExtensionHandler):
             if "NEGOTIATION-T" in key_str and "DATA-NEGOTIATION-T" not in key_str and isinstance(value, str):
                 return value
         return None
-
-
-class AuthorizationTHandler(ExtensionHandler):
-    extension_keyword = "Authorization-T"
-
-    async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
-        return metadata
-
-    async def after_receive(self, agent_card, result, a2at_client=None,
-                            control_point=None, extension_callback=None,
-                            event_callback=None):
-        auth_request = result.metadata.get("Authorization-T") if result.metadata else None
-        if not auth_request and result.metadata:
-            for k, v in result.metadata.items():
-                if isinstance(k, str) and "Authorization-T" in k:
-                    auth_request = v
-                    break
-        if not auth_request or not extension_callback:
-            return result
-        agent_name = getattr(agent_card, "name", "")
-        logger.info(f"[Authorization-T] Agent '{agent_name}' requests authorization")
-        if event_callback:
-            event_callback.on_event("authorization_request", {
-                "agent": agent_name,
-                "auth_request": auth_request if isinstance(auth_request, (str, dict)) else str(auth_request),
-            })
-        approved = await extension_callback.on_authorization(agent_name, auth_request)
-        if approved:
-            result.metadata["authorization_approved"] = True
-            logger.info(f"[Authorization-T] Approved for '{agent_name}'")
-            if event_callback:
-                event_callback.on_event("authorization_resolved", {"agent": agent_name, "decision": "approved"})
-        else:
-            result.task_state = "AUTHORIZATION_DENIED"
-            result.text = result.text or "Authorization denied"
-            logger.warning(f"[Authorization-T] Denied for '{agent_name}'")
-            if event_callback:
-                event_callback.on_event("authorization_resolved", {"agent": agent_name, "decision": "denied"})
-        return result
-
-
-class NotificationTHandler(ExtensionHandler):
-    extension_keyword = "Notification-T"
-
-    async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
-        # Subscriptions are established once before the workflow via
-        # ExtensionSender.send_notification (pre-positioning); they are not
-        # re-injected on every task send, so this hook is a pass-through.
-        return metadata
-
-    async def after_receive(self, agent_card, result, a2at_client=None,
-                            control_point=None, extension_callback=None,
-                            event_callback=None):
-        notification = None
-        if result.metadata:
-            notification = result.metadata.get("Notification-T")
-            if not notification:
-                for k, v in result.metadata.items():
-                    if isinstance(k, str) and "Notification-T" in k:
-                        notification = v
-                        break
-        if not notification or not extension_callback:
-            return result
-        agent_name = getattr(agent_card, "name", "")
-        logger.info(f"[Notification-T] Received notification from '{agent_name}'")
-        if event_callback:
-            event_callback.on_event("notification", {
-                "agent": agent_name,
-                "notification": notification if isinstance(notification, (str, dict)) else str(notification),
-            })
-        await extension_callback.on_notification(agent_name, notification)
-        return result
 
 
 class ExtensionRegistry:

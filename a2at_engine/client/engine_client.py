@@ -19,9 +19,9 @@
 
 Single responsibility: the workflow execution send path. Owns the
 Task-T/Negotiation-T extension handler chain, the Negotiation-T
-auto-loop, the global EventCallback, and the ControlPoint/
-ExtensionCallback wiring. All wire-level work (httpx, auth, SSE
-consumer) delegates to :class:`A2ATransport`.
+auto-loop, the global EventCallback, and the ControlPoint wiring.
+All wire-level work (httpx, auth, SSE consumer) delegates to
+:class:`A2ATransport`.
 
 One-shot pre-positioning sends (Authorization-T / Notification-T) are
 a separate concern and live on :class:`ExtensionSender` -- callers
@@ -47,7 +47,7 @@ from a2at_engine.client.auth_manager import AuthManager
 from a2at_engine.client.extension_handlers import ExtensionRegistry, ExtensionHandler
 from a2at_engine.client.protocol_logger import log_request, log_response
 from a2at_engine.control.control_points import (
-    EventCallback, EventType, ExtensionCallback,
+    EventCallback, EventType,
 )
 from a2at_engine.core.models import SendMessageResult
 from a2at_engine.client.extensions import A2ATExtension
@@ -78,7 +78,6 @@ class WorkflowEngineClient:
                 self._extension_registry.register(h)
         self._control_point = None
         self._event_callback = event_callback
-        self._extension_callback = None
         self._max_negotiation_rounds = max_negotiation_rounds
         logger.info(
             f"[EngineClient] Initialized over transport "
@@ -92,11 +91,6 @@ class WorkflowEngineClient:
 
     def set_control_point(self, control_point):
         self._control_point = control_point
-
-    def set_extension_callback(self, extension_callback: ExtensionCallback):
-        """Attach an ExtensionCallback for Authorization-T / Notification-T
-        reactive hooks (on_authorization / on_notification)."""
-        self._extension_callback = extension_callback
 
     def set_event_callback(self, callback):
         """Attach an EventCallback so send_message emits agent_request/response."""
@@ -361,7 +355,7 @@ class WorkflowEngineClient:
             result = await handler.after_receive(
                 agent_card, result,
                 self._transport.get_a2at_client(), self._control_point,
-                self._extension_callback, self._event_callback,
+                self._event_callback,
             )
         return result
 

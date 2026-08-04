@@ -1,9 +1,9 @@
 # Developer Guide: a2at-engine SDK
 
 Integration guide for the a2at-engine Python SDK: installation, the layered
-entry points, ControlPoint and ExtensionCallback implementation, event
-handling, agent authentication, and the A2A-T extension model. For the
-architecture rationale, see [DESIGN.md](DESIGN.md).
+entry points, ControlPoint implementation, event handling, agent
+authentication, and the A2A-T extension model. For the architecture
+rationale, see [DESIGN.md](DESIGN.md).
 
 ---
 
@@ -209,8 +209,9 @@ async for event in execute_psop(...):
 ## 4. ControlPoint: Flow Decisions
 
 `ControlPoint` drives the workflow forward. You must implement `on_task`
-and `on_route`; the rest have defaults. Reactive hooks for agent-pushed
-A2A-T data live on `ExtensionCallback` (section 5), not here.
+and `on_route`; the rest have defaults. Authorization-T and Notification-T
+are pre-positioning operations handled via `ExtensionSender` before the
+workflow starts, not in-workflow callbacks.
 
 ### 4.1 Methods
 
@@ -338,11 +339,6 @@ notif = await sender.send_notification(
 )
 ```
 
-The `ExtensionCallback` interface (`on_authorization` / `on_notification`)
-and the `AuthorizationTHandler` / `NotificationTHandler` classes are
-reserved as extension points for custom inline handlers. They are not
-auto-registered in the default handler chain.
-
 ---
 
 ## 6. Layer 0: A2ATransport + Facades
@@ -397,12 +393,12 @@ The four extensions split into in-workflow and one-shot pre-positioning:
 |---|---|---|---|
 | Task-T | in-workflow | `TaskTHandler` (auto-registered) | Generates structured task prompt on send |
 | Negotiation-T | in-workflow | `NegotiationTHandler` (auto-registered) | Extracts negotiation context on receive |
-| Authorization-T | one-shot | `AuthorizationTHandler` (manual) | Pre-positioned via `ExtensionSender` |
-| Notification-T | one-shot | `NotificationTHandler` (manual) | Subscription via `ExtensionSender` (long-lived SSE) |
+| Authorization-T | pre-positioning | N/A (no handler) | Pre-positioned via `ExtensionSender` |
+| Notification-T | pre-positioning | N/A (no handler) | Subscription via `ExtensionSender` |
 
 The handler chain runs in every `send_message`: `before_send` (Task-T
 injects the prompt), send, `after_receive` (Negotiation-T extracts context,
-feeds the auto-loop). Pre-positioning extensions bypass this chain.
+feeds the auto-loop). Pre-positioning extensions bypass this chain entirely.
 
 Prompt generation: Task-T uses the A2A-T SDK's `generateTaskPrompt`.
 Authorization-T, Notification-T, and Negotiation-T prompt generators are

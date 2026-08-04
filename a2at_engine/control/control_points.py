@@ -17,22 +17,16 @@
 
 """Control point interfaces -- user implements the decision layer.
 
-Decision points split by responsibility:
-
 ControlPoint (workflow control -- drives the workflow forward):
 - on_task: send a task to an agent (user decides when/how)      [required]
 - on_self_task: handle a self-loop task locally                 [default]
 - on_route: choose a branch (user decides which path)           [required]
 - on_negotiation: supply clarification during Negotiation-T     [default]
 
-ExtensionCallback (reactive to agent-pushed A2A-T data):
-- on_authorization: approve/deny authorization requests         [default]
-- on_notification: handle notification pushes                   [default]
-
-The split keeps ControlPoint focused on flow decisions (called by the
-executor + the client auto-negotiate loop) and isolates the reactive
-extension hooks (called by the Authorization-T / Notification-T handlers).
-EventCallback is optional; instantiate directly as a no-op sink or subclass.
+Authorization-T and Notification-T are pre-positioning concerns handled
+once before the workflow starts via ExtensionSender, not in-workflow
+callbacks. EventCallback is optional; instantiate directly as a no-op
+sink or subclass.
 """
 
 from abc import ABC, abstractmethod
@@ -97,8 +91,7 @@ class ControlPoint(ABC):
 
     Each method drives the workflow forward and is called by the
     WorkflowExecutor (``on_task`` / ``on_self_task`` / ``on_route``) or the
-    client auto-negotiate loop (``on_negotiation``). Reactive hooks for
-    agent-pushed A2A-T data live on :class:`ExtensionCallback` instead.
+    client auto-negotiate loop (``on_negotiation``).
     """
 
     @abstractmethod
@@ -149,48 +142,6 @@ class ControlPoint(ABC):
         Default: returns a generic clarification.
         """
         return "Please proceed with the original task using available information."
-
-
-class ExtensionCallback(ABC):
-    """Reactive hooks for agent-pushed A2A-T extension data.
-
-    Invoked by the Authorization-T / Notification-T extension handlers when
-    an agent pushes authorization requests or notifications back in a task
-    response. These are distinct from :class:`ControlPoint` flow decisions:
-    they react to peer-initiated extension traffic rather than driving the
-    workflow forward. Only invoked when the corresponding handler is
-    registered on the engine client.
-    """
-
-    async def on_authorization(self, agent_name: str, auth_request: Dict[str, Any]) -> bool:
-        """Called when an agent requests authorization. Return True to approve.
-
-        Default: approve. Override to apply a custom authorization policy.
-        """
-        return True
-
-    async def on_notification(self, agent_name: str, notification: Dict[str, Any]) -> None:
-        """Called when a notification is received from an agent.
-
-        Default: no-op. Override to handle agent notifications.
-
-        Note: the subscription *result* (e.g. a recovery outcome the agent
-        pushes later) flows back through the ``send_notification`` /
-        ``send_extension_message`` response stream, not through this hook.
-        This hook only fires when an agent voluntarily includes a
-        Notification-T payload in a ``send_message`` task response.
-        """
-        return None
-
-
-class DefaultExtensionCallback(ExtensionCallback):
-    """No-op extension callback. Approves authorizations, ignores notifications."""
-
-    async def on_authorization(self, agent_name: str, auth_request: Dict[str, Any]) -> bool:
-        return True
-
-    async def on_notification(self, agent_name: str, notification: Dict[str, Any]) -> None:
-        return None
 
 
 class NegotiationStrategy(ABC):

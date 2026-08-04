@@ -21,7 +21,7 @@
 Quick start:
 
     from a2at_engine import (
-        WorkflowExecutor, ControlPoint, ExtensionCallback,
+        WorkflowExecutor, ControlPoint,
         A2ATransport, WorkflowEngineClient, ExtensionSender,
         Workflow, TaskResponse, RouteDecision,
     )
@@ -31,25 +31,21 @@ Quick start:
     transport = A2ATransport(agent_cards=my_cards, a2at_env_path=".env")
     engine_client = WorkflowEngineClient(transport)
 
-    # 3. User implements ControlPoint (workflow decisions) and optionally
-    #    ExtensionCallback (reactive Authorization-T / Notification-T hooks)
+    # 3. User implements ControlPoint (workflow decisions)
     class MyCP(ControlPoint):
         async def on_task(self, request, engine_client):
             result = await engine_client.send_message(request.agent_name, request.message)
             return TaskResponse(success=True, output=result.text)
         async def on_route(self, step_name, results, conditions):
             return RouteDecision(next_step="step_b")
-    class MyExtCB(ExtensionCallback):
-        async def on_authorization(self, agent_name, auth_request):
-            return True
-        async def on_notification(self, agent_name, notification):
-            print(f"Notification from {agent_name}: {notification}")
-    engine_client.set_extension_callback(MyExtCB())
-    # Optional: one-shot pre-positioning (Authorization-T / Notification-T)
+
+    # 4. Optional: one-shot pre-positioning (Authorization-T / Notification-T)
+    #    via ExtensionSender before workflow execution
     # sender = ExtensionSender(transport)
     # await sender.send_authorization("agent_a", "authorize", "policy text")
+    # await sender.send_notification("agent_a", "subscribe", "topic text")
 
-    # 4. Execute
+    # 5. Execute
     executor = WorkflowExecutor(workflow=wf, control_point=MyCP(), engine_client=engine_client)
     result = await executor.run()
 """
@@ -63,8 +59,7 @@ from a2at_engine.core import (
 )
 from a2at_engine.client import (
     WorkflowEngineClient, A2ATransport, ExtensionSender, AuthManager,
-    ExtensionHandler, TaskTHandler, NegotiationTHandler,
-    AuthorizationTHandler, NotificationTHandler, ExtensionRegistry,
+    ExtensionHandler, TaskTHandler, NegotiationTHandler, ExtensionRegistry,
     A2ATExtension, AuthProvider,
     create_ssl_context, normalize_agent_dict, StubWorkflowEngineClient,
     log_request, log_response, log_response_event,
@@ -72,7 +67,6 @@ from a2at_engine.client import (
 from a2at_engine.control import ControlPoint, EventCallback, EventType
 from a2at_engine.control import (
     NegotiationStrategy, DefaultControlPoint,
-    ExtensionCallback, DefaultExtensionCallback,
 )
 from a2at_engine.registry import RegistryClient, load_psop, search_psop
 from a2at_engine.runner import execute_psop
@@ -86,14 +80,12 @@ __all__ = [
     "ContextBuilder", "WorkflowExecutor",
     # Client
     "WorkflowEngineClient", "A2ATransport", "ExtensionSender", "AuthManager",
-    "ExtensionHandler", "TaskTHandler", "NegotiationTHandler",
-    "AuthorizationTHandler", "NotificationTHandler", "ExtensionRegistry",
+    "ExtensionHandler", "TaskTHandler", "NegotiationTHandler", "ExtensionRegistry",
     "A2ATExtension", "AuthProvider", "log_request", "log_response", "log_response_event", "StubWorkflowEngineClient",
     "create_ssl_context", "normalize_agent_dict",
     # Control (user implements)
     "ControlPoint", "EventCallback", "EventType",
     "NegotiationStrategy", "DefaultControlPoint",
-    "ExtensionCallback", "DefaultExtensionCallback",
     # Registry (optional)
     "RegistryClient", "load_psop", "search_psop",
     # High-level runner

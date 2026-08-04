@@ -18,6 +18,7 @@ shared base over which the two single-responsibility facades sit:
 Neither facade duplicates transport code; both delegate here.
 """
 
+import asyncio
 import uuid
 from typing import Dict, Any, List, Optional, Callable
 from loguru import logger
@@ -350,6 +351,108 @@ class A2ATransport:
                     })
 
         return response_text, last_task_result, last_metadata_dict, task_state
+
+    async def consume_notification_stream(
+        self, client, send_req,
+        event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
+        agent_name: str = "",
+    ) -> "asyncio.Task":
+        """Open a long-lived SSE stream for Notification-T subscription.
+
+        Returns an ``asyncio.Task`` that keeps the stream alive. The task
+        completes when the stream closes or is cancelled. Each SSE event
+        is forwarded to ``event_callback`` (if provided) as a dict with
+        keys: ``agent``, ``type``, ``state``, ``text``, ``metadata``, etc.
+
+        The first event (subscription confirmation) is also forwarded.
+        Unlike ``consume_stream``, this method does NOT return a result --
+        the stream stays open and events flow asynchronously.
+        """
+        async def _consume():
+            try:
+                logger.info(f"[Transport] Opening Notification-T long-lived stream to {agent_name}")
+                async for response in client.send_message(send_req):
+                    has_task = response.HasField("task")
+                    has_message = response.HasField("message")
+
+                    event_data: Dict[str, Any] = {"agent": agent_name}
+
+                    if has_task:
+                        task = response.task
+                        state = self._extract_task_state(task)
+                        logger.info(f"[Transport] Notification-T event from {agent_name}: state={state or None}")
+                        event_data["type"] = "task_update"
+                        event_data["state"] = state or ""
+                        is_final = state in (
+                            "TASK_STATE_COMPLETED", "TASK_STATE_FAILED",
+                            "TASK_STATE_CANCELED", "TASK_STATE_REJECTED",
+                        )
+                        event_data["is_final"] = is_final
+                        text = self._extract_task_text(task, None)
+                        if text:
+                            event_data["text"] = text
+                        md = self._extract_task_metadata(task)
+                        if md:
+                            event_data["metadata"] = md
+                        for art in (task.artifacts or []):
+                            art_text = ""
+                            for part in (art.parts or []):
+                                if part.text:
+                                    art_text += part.text
+                            art_data = {
+                                "artifact_id": getattr(art, "artifact_id", "") or "",
+                                "artifact_name": getattr(art, "name", "") or "",
+                                "text": art_text,
+                            }
+                            am = getattr(art, "metadata", None)
+                            if am:
+                                if isinstance(am, dict):
+                                    art_data["metadata"] = am
+                                else:
+                                    try:
+                                        art_data["metadata"] = MessageToDict(am, preserving_proto_field_name=True)
+                                    except Exception:
+                                        pass
+                            event_data.setdefault("artifacts", []).append(art_data)
+
+                    elif has_message:
+                        logger.info(f"[Transport] Notification-T message event from {agent_name}")
+                        msg = response.message
+                        event_data["type"] = "message"
+                        msg_text = self._extract_message_text(msg, None)
+                        if msg_text:
+                            event_data["text"] = msg_text
+                        try:
+                            event_data["role"] = type(msg).Role.Name(msg.role)
+                        except Exception:
+                            event_data["role"] = str(getattr(msg, "role", ""))
+                        mm = getattr(msg, "metadata", None)
+                        if mm:
+                            if isinstance(mm, dict):
+                                event_data["metadata"] = mm
+                            else:
+                                try:
+                                    event_data["metadata"] = MessageToDict(mm, preserving_proto_field_name=True)
+                                except Exception:
+                                    pass
+
+                    if event_callback and event_data.get("type"):
+                        try:
+                            event_callback(event_data)
+                        except Exception as e:
+                            logger.warning(f"[Transport] Notification-T callback error for {agent_name}: {e}")
+
+                logger.info(f"[Transport] Notification-T stream closed for {agent_name}")
+            except asyncio.CancelledError:
+                logger.info(f"[Transport] Notification-T stream cancelled for {agent_name}")
+            except Exception as e:
+                msg = str(e)
+                if "connection closed" in msg.lower() or "reading_length" in msg.lower():
+                    logger.info(f"[Transport] Notification-T stream closed for {agent_name}")
+                else:
+                    logger.warning(f"[Transport] Notification-T stream error for {agent_name}: {e}")
+
+        return asyncio.create_task(_consume(), name=f"notif-t-{agent_name}")
 
     # ------------------------------------------------------------------
     # Parsing helpers (static)

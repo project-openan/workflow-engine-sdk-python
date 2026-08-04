@@ -15,7 +15,7 @@ Kept separate from WorkflowEngineClient so a caller that only wants to
 pre-position is not forced to hold a workflow-machinery facade.
 """
 
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, Callable
 import asyncio
 from loguru import logger
 
@@ -84,10 +84,67 @@ class ExtensionSender:
 
     async def send_notification(
         self, agent_name: str, instruction: str, natural_language_input: str,
+        event_callback: Optional[Callable[[Dict[str, Any]], None]] = None,
     ) -> SendMessageResult:
-        """Convenience for Notification-T pre-positioning."""
-        return await self.send_extension_message(
-            agent_name, instruction, natural_language_input, A2ATExtension.NOTIFICATION_T)
+        """Notification-T pre-positioning with optional long-lived SSE subscription.
+
+        When ``event_callback`` is provided, the SSE stream stays open after
+        the subscription confirmation. Subsequent events (e.g. recovery results
+        pushed by the agent) are forwarded to the callback as dicts. The
+        returned ``SendMessageResult`` contains the subscription confirmation.
+        The background stream task is stored on the sender instance and can
+        be cancelled via ``cancel_notification_streams()``.
+
+        Without ``event_callback``, behaves as a one-shot send (same as
+        ``send_authorization``).
+        """
+        agent_card = self._transport.get_card(agent_name)
+        if not agent_card:
+            raise RuntimeError(f"Agent not found: {agent_name}")
+        metadata_value = await asyncio.to_thread(
+            self._generate_extension_prompt, A2ATExtension.NOTIFICATION_T, natural_language_input
+        )
+        if not metadata_value:
+            metadata_value = natural_language_input
+            logger.info(f"[ExtensionSender] SDK prompt generation unavailable for {agent_name} (Notification-T), using input as metadata")
+        metadata = {A2ATExtension.NOTIFICATION_T.uri: metadata_value}
+        client = self._transport.create_a2a_client(agent_card)
+        send_req = self._transport.build_send_request(instruction, None, metadata)
+
+        if event_callback is not None:
+            logger.info(f"[ExtensionSender] sendNotification to {agent_name}: long-lived SSE with callback")
+            bg_task = await self._transport.consume_notification_stream(
+                client, send_req, event_callback, agent_name
+            )
+            if not hasattr(self, '_notification_tasks'):
+                self._notification_tasks = []
+            self._notification_tasks.append(bg_task)
+            return SendMessageResult(
+                text="Subscribed", task=None,
+                metadata=metadata, task_state="TASK_STATE_WORKING",
+            )
+        else:
+            logger.info(f"[ExtensionSender] sendNotification to {agent_name}: one-shot (no callback)")
+            response_text, last_task, last_meta, task_state = (
+                await self._transport.consume_stream(client, send_req)
+            )
+            if response_text is None and last_task is not None:
+                response_text = str(last_task)
+            result = SendMessageResult(
+                text=response_text or "", task=last_task,
+                metadata=last_meta, task_state=task_state,
+            )
+            logger.info(f"[ExtensionSender] Notification response from {agent_name}: state={result.task_state}")
+            return result
+
+    def cancel_notification_streams(self):
+        """Cancel all active Notification-T background streams."""
+        tasks = getattr(self, '_notification_tasks', [])
+        for t in tasks:
+            if not t.done():
+                t.cancel()
+        tasks.clear()
+        logger.info("[ExtensionSender] All notification streams cancelled")
 
     # ------------------------------------------------------------------
     # Extension prompt generation dispatch

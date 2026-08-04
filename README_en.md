@@ -63,8 +63,8 @@ flowchart TB
 ```python
 import asyncio
 from a2at_engine import (
-    execute_psop, ControlPoint, ExtensionCallback, RouteDecision,
-    RegistryClient, load_psop,
+    execute_psop, ControlPoint, RouteDecision,
+    TaskResponse, RegistryClient, load_psop,
 )
 
 
@@ -79,14 +79,6 @@ class MyControlPoint(ControlPoint):
     async def on_route(self, step_name, results, conditions):
         # conditions: List[JumpCondition], each with .step and .condition
         return RouteDecision(next_step=conditions[0].step)
-
-
-class MyExtCallback(ExtensionCallback):
-    async def on_authorization(self, agent_name, auth_request):
-        return True  # approve
-
-    async def on_notification(self, agent_name, notification):
-        print(f"Notification from {agent_name}: {notification}")
 
 
 async def main():
@@ -106,7 +98,6 @@ async def main():
         psop=workflow,
         agent_cards=agent_cards,
         control_point=MyControlPoint(),
-        extension_callback=MyExtCallback(),
         a2at_env_path=".env",
         credentials_config="agent_credentials.json",
         runtime_intent="Diagnose SPN cross-city fault",
@@ -123,7 +114,7 @@ if __name__ == "__main__":
 
 | Layer | Entry Point | Handles | You Provide |
 |---|---|---|---|
-| 2 (high) | `execute_psop()` | Event stream, lifecycle, cancellation, onFinish | ControlPoint + ExtensionCallback + AgentCards + config |
+| 2 (high) | `execute_psop()` | Event stream, lifecycle, cancellation, onFinish | ControlPoint + AgentCards + config |
 | 1 (mid) | `WorkflowExecutor` | DAG traversal, context assembly, dispatch | ControlPoint + WorkflowEngineClient + Workflow |
 | 0 (low) | `A2ATransport` + two facades | A2A send, auth, extensions, SSE | AgentCards + config |
 
@@ -140,15 +131,6 @@ Most integrations use Layer 2. Use Layer 1 for manual control. Use `ExtensionSen
 | `on_route(step_name, results, conditions)` | yes | a step has conditional branches | which branch |
 | `on_negotiation(agent_name, text, result)` | no (default generic) | agent returns INPUT_REQUIRED | clarification text |
 
-### ExtensionCallback (reactive hooks)
-
-| Method | Required | Fires when | Decides |
-|---|---|---|---|
-| `on_authorization(agent_name, auth_request)` | no (default approve) | agent pushes Authorization-T in a task response | approve/deny |
-| `on_notification(agent_name, notification)` | no (default no-op) | agent pushes Notification-T in a task response | how to handle |
-
-> The subscription *result* (e.g. a recovery outcome the agent pushes later) flows back through the `send_notification` response stream, not through `onNotification`. The hook only fires when an agent voluntarily includes a Notification-T payload in a `sendMessage` task response.
-
 ## A2ATransport + Facades (Layer 0)
 
 ```python
@@ -163,24 +145,25 @@ transport = A2ATransport(
 
 # Workflow send facade
 engine_client = WorkflowEngineClient(transport)
-engine_client.set_extension_callback(MyExtCallback())
 
 # One-shot pre-positioning facade (before workflow starts)
 sender = ExtensionSender(transport)
-await sender.send_authorization("agent_a", "authorize diagnosis", "Diagnose SPN cross-city fault")
-await sender.send_notification("agent_a", "subscribe to recovery result", "Diagnose SPN cross-city fault")
+auth_result = await sender.send_authorization("agent_a", "authorize diagnosis", "Diagnose SPN cross-city fault")
+notif_result = await sender.send_notification("agent_a", "subscribe to recovery result", "Diagnose SPN cross-city fault")
 ```
 
 Both facades share one transport; no wire code is duplicated.
+
+**Pre-positioning callbacks**: Authorization-T and Notification-T are one-shot operations sent via `ExtensionSender` before the workflow starts. The send result is returned directly as a `SendMessageResult` -- no separate callback interface is needed.
 
 ## A2A-T Extensions
 
 | Extension | Lifecycle | Description |
 |---|---|---|
-| Task-T | in-workflow | SDK generates a structured task prompt on send and injects into metadata |
-| Negotiation-T | in-workflow | extracts negotiation context on receive, drives the auto-loop |
-| Authorization-T | one-shot pre-position | sent via ExtensionSender before the workflow |
-| Notification-T | one-shot pre-position | subscribes to result notifications (long-lived SSE) |
+| Task-T | in-workflow | SDK generates a structured task prompt on send and injects into `metadata["...Task-T/v1"]` |
+| Negotiation-T | in-workflow | Extracts negotiation context from `metadata["...NEGOTIATION-T"]` on receive, drives the auto-loop |
+| Authorization-T | one-shot pre-position | Sent via `ExtensionSender` before the workflow. `instruction` → `parts[].text`, `natural_language_input` → SDK generates structured policy → `metadata["...Authorization-T/v1"]` |
+| Notification-T | one-shot pre-position | Sent via `ExtensionSender` before the workflow. `instruction` → `parts[].text`, `natural_language_input` → SDK generates structured subscription → `metadata["...Notification-T/v1"]` |
 
 `ExtensionRegistry` auto-registers Task-T and Negotiation-T (in-workflow handlers); Authorization-T / Notification-T are pre-positioning operations, not auto-registered. Their handler classes are retained for callers that need inline handling of agent-pushed data.
 
@@ -218,6 +201,44 @@ When an AgentCard declares `securitySchemes` and `securityRequirements`, the SDK
 | accept_header | no | - | custom Accept header |
 
 Agent names must match the AgentCard `name`; scheme names must match `securitySchemes` keys. A dict may be passed directly: `credentials_config=dict`. See `examples/agent_credentials.example.json`.
+
+**Password Encryption:**
+
+Password fields in `request_fields` support the `enc:` prefix format `enc:<base64-iv>:<base64-ciphertext>` using AES-256-GCM. The SDK reads the key from the `A2AT_CRED_KEY` environment variable at runtime to auto-decrypt.
+
+```bash
+# 1. Generate a 32-byte key (one-time)
+python -c "import secrets; print(secrets.token_hex(32))"
+
+# 2. Set the key as an environment variable
+export A2AT_CRED_KEY=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
+
+# 3. Encrypt the password
+python -c "from a2at_engine.client.credential_crypto import encrypt; print(encrypt('Admin@123'))"
+# Output: enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+```
+
+Paste the `enc:...` output into the password field of your credentials JSON.
+
+### Custom AuthProvider
+
+For non-standard auth (corporate SSO, external identity providers, agents with no `securitySchemes` that still require auth), implement the `AuthProvider` ABC:
+
+```python
+from a2at_engine import AuthProvider
+
+class SsoAuthProvider(AuthProvider):
+    def apply_auth(self, agent_name: str, agent_card, headers: dict) -> None:
+        token = sso_client.get_access_token(agent_name)
+        headers["Authorization"] = f"Bearer {token}"
+
+transport = A2ATransport(
+    agent_cards=agent_cards,
+    auth_provider=SsoAuthProvider(),
+)
+```
+
+Both approaches can be combined: `AuthProvider` runs first, credentials-based auth runs second, each injecting headers independently.
 
 ## File Structure
 

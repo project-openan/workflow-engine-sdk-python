@@ -122,8 +122,7 @@ async def execute_psop(
     The business provides:
 
     - ``control_point``: decision callbacks (on_task / on_route /
-      on_authorization / on_notification) -- the only place business
-      policy lives during execution.
+      on_negotiation) -- the only place flow-decision policy lives.
     - ``on_finish``: optional persistence hook, called with
       (ExecutionResult, collected_events) after the workflow ends.
     - ``on_event``: optional event transformer. Called per event; may

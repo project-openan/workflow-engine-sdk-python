@@ -97,13 +97,13 @@ All fields match: id, name, description, steps, name, subtasks, next, layer, con
 | ExtensionRegistry: pre-registers Task-T + Negotiation-T | YES |
 | send_message flow: before_send -> AGENT_REQUEST -> transport.send -> after_receive -> auto_negotiate | YES |
 | AGENT_REQUEST data: {agent, request, metadata} | YES |
-| AGENT_RESPONSE data: {agent, response} | **GAP 3** |
+| AGENT_RESPONSE data: {agent, response, metadata} | YES |
 | Auto-negotiation: INPUT_REQUIRED -> on_negotiation -> follow-up -> recurse | YES |
 | Follow-up format: [NEGOTIATION_RESOLUTION]\n...clarification...\n---\nOriginal Task:\n...message...\n\nPlease re-execute... | YES |
 | build_negotiation_follow_up_meta: SDK continue_negotiation with AGREED | YES |
 | Fallback: {NEGOTIATION_T.uri: "## Data Return Confirmation\n" + clarification} | YES |
 
-**GAP 3 (critical):** Python AGENT_RESPONSE includes `metadata`: `{"agent", "response", "metadata"}`. Java does NOT: `Map.of("agent", agentName, "response", result.getText())`. Java needs to add metadata.
+**GAP 3 (resolved):** Python AGENT_RESPONSE includes `metadata`: `{"agent", "response", "metadata"}`. Java now also includes metadata in AGENT_RESPONSE event.
 
 ### 4.3 ExtensionHandler + TaskTHandler + NegotiationTHandler
 
@@ -131,10 +131,10 @@ TASK_T, NEGOTIATION_T, AUTHORIZATION_T, NOTIFICATION_T - all URIs identical.
 |--------|-------|
 | send_extension_message | YES |
 | send_authorization | YES |
-| send_notification | YES (Java has long-lived stream) |
+| send_notification | YES |
 | generate_extension_prompt dispatch | YES |
 
-**GAP 4 (non-critical):** Java has `sendNotificationStream` for long-lived SSE. Python uses regular `consume_stream`. Python can't receive later-pushed recovery results via stream.
+**GAP 4 (not an SDK gap):** Java's `sendNotification` has a `Consumer<Map>` overload for long-lived SSE event callbacks. Python's `send_notification` returns `SendMessageResult` via `consume_stream`. Long-lived SSE subscription handling is the responsibility of the workbench agent's business code, not the SDK. Both SDKs provide the `send_notification` interface; how the agent processes subsequent SSE events is a demo-agent concern, not an SDK contract difference.
 
 ### 4.7 A2ATransport
 
@@ -270,7 +270,6 @@ All behaviors match. Both report healthy state, no recovery needed.
 
 | # | Gap | Fix Direction |
 |---|-----|--------------|
-| 3 | AGENT_RESPONSE missing metadata in Java | Add metadata to Java AGENT_RESPONSE event |
 | 8 | Python agents lack Notification-T subscription handling | Add to Python NegotiationBaseAgentExecutor |
 | 9 | Python SPN agent lacks self-triggered recovery | Add selfTriggerRecovery to Python SPN agents |
 | 10 | Orchestration center lacks Extension pre-positioning | Add ExtensionPrePositioner to exec_engine.py |
@@ -288,8 +287,9 @@ All behaviors match. Both report healthy state, no recovery needed.
 | # | Gap | Action |
 |---|-----|--------|
 | 2 | skip_extensions param | Acceptable divergence |
-| 4 | Python lacks long-lived Notification-T stream | Add later |
 | 5 | Python log_request header source | Best-effort |
+
+> **GAP 4 (removed):** Previously listed as "Python lacks long-lived Notification-T stream". This is not an SDK-level gap. Both SDKs provide `send_notification`; long-lived SSE subscription handling belongs to the workbench agent's business code, not the SDK.
 
 ---
 
@@ -314,7 +314,7 @@ All behaviors match. Both report healthy state, no recovery needed.
 - [x] ExtensionRegistry: match
 - [x] ExtensionInterceptor: filter active extensions
 - [x] A2ATExtension: 4 URIs match
-- [x] ExtensionSender: match (except long-lived stream)
+- [x] ExtensionSender: match
 - [x] A2ATransport: all behaviors match
 - [x] ProtocolLogger: format match (except header source)
 - [x] WorkflowExecutor: DAG, parallel, routing all match
@@ -343,10 +343,13 @@ All behaviors match. Both report healthy state, no recovery needed.
 
 **SDK-level interfaces are fully aligned.** All 40+ business-facing interfaces have matching parameter names, parameter meanings, parameter formats, and event data structures.
 
-**6 gaps identified** in two categories:
+**6 gaps remain**, all in the demo-agent layer:
 
-1. **Protocol-event gaps** (3, 8, 9, 10): Affect what data flows through the event stream and whether the full A2A-T extension lifecycle (Authorization-T pre-positioning, Notification-T subscription, self-triggered recovery) works in the Python demo.
+1. **Demo-agent protocol gaps** (8, 9, 10): Affect whether the full A2A-T extension lifecycle (Notification-T subscription, self-triggered recovery, extension pre-positioning) works in the Python demo agents.
 
 2. **Demo-agent behavioral gaps** (6, 7, 11): Differences in how demo agents process messages and trigger negotiation. No SDK protocol contract impact.
 
-**Recommendation:** Fix GAPs 3, 8, 9, 10 first (protocol-level), then GAPs 6, 7, 11 (demo-agent alignment). GAPs 2, 4, 5 are non-critical.
+> **Resolved:** GAP 3 (Java AGENT_RESPONSE missing metadata) — fixed.
+> **Removed:** GAP 4 (Python lacks long-lived Notification-T stream) — not an SDK-level gap; subscription handling belongs to the workbench agent's business code.
+
+**Recommendation:** Fix GAPs 8, 9, 10 first (demo-agent protocol), then GAPs 6, 7, 11 (demo-agent behavioral alignment). GAPs 2, 5 are non-critical.

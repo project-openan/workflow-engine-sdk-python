@@ -47,7 +47,6 @@ graph TD
     L2 --> L1 --> L0
     L0 -.-> F
 ```
-```
 
 ### 2.1 Layer 0 - Communication
 
@@ -195,7 +194,6 @@ that support lands upstream.
 
 ### 4.3 Extension handler chain
 
-```
 ```mermaid
 graph TD
     SM["sendMessage(agent, message)"]
@@ -205,7 +203,6 @@ graph TD
     AN["auto_negotiate loop (if INPUT_REQUIRED)"]
 
     SM --> BS --> TS --> AR --> AN
-```
 ```
 
 `ExtensionRegistry.getHandlersForExtensions` matches an agent's declared
@@ -257,7 +254,6 @@ Events are emitted to an optional `EventCallback` as stable string types
 
 ### 7.1 Workflow execution with negotiation
 
-```
 ```mermaid
 sequenceDiagram
     participant H as Host
@@ -278,11 +274,9 @@ sequenceDiagram
     C->>E: final result
     E->>H: ExecutionResult
 ```
-```
 
 ### 7.2 Pre-positioning authorization
 
-```
 ```mermaid
 sequenceDiagram
     participant H as Host
@@ -298,11 +292,9 @@ sequenceDiagram
     T-->>ES: auth result
     ES-->>H: result
 ```
-```
 
 ### 7.3 Notification subscription
 
-```
 ```mermaid
 sequenceDiagram
     participant H as Host
@@ -317,7 +309,6 @@ sequenceDiagram
     T-->>ES: first event -> future
     ES-->>H: result
     Note over T,A: later results stream back over the same connection
-```
 ```
 
 ---

@@ -20,7 +20,7 @@ Verify:
 
 ```python
 import a2at_engine
-print(a2at_engine.__version__)  # 1.0.0
+print(a2at_engine.__version__)  # 1.0.1
 ```
 
 ---
@@ -31,7 +31,7 @@ The SDK has three layers. Pick the one that matches your use case:
 
 | Layer | Entry Point | What It Handles | What You Provide |
 |-------|------------|-----------------|-----------------|
-| **2 (high)** | `execute_psop()` | Event stream, lifecycle, cancellation, event collection | ControlPoint + ExtensionCallback + AgentCards + config |
+| **2 (high)** | `execute_psop()` | Event stream, lifecycle, cancellation, event collection | ControlPoint + AgentCards + config |
 | **1 (mid)** | `WorkflowExecutor` | DAG traversal, context assembly, ControlPoint dispatch | ControlPoint + WorkflowEngineClient + Workflow |
 | **0 (low)** | `A2ATransport` + facades | A2A send, auth, extensions, SSE normalization | AgentCards + config |
 
@@ -52,8 +52,8 @@ pre-positioning). See DESIGN.md for the rationale.
 ```python
 import asyncio
 from a2at_engine import (
-    execute_psop, ControlPoint, ExtensionCallback, RouteDecision,
-    RegistryClient, load_psop,
+    execute_psop, ControlPoint, RouteDecision,
+    TaskResponse, RegistryClient, load_psop,
 )
 
 
@@ -68,14 +68,6 @@ class MyControlPoint(ControlPoint):
 
     async def on_route(self, step_name, results, conditions):
         return RouteDecision(next_step=conditions[0].step)
-
-
-class MyExtCallback(ExtensionCallback):
-    async def on_authorization(self, agent_name, auth_request):
-        return True
-
-    async def on_notification(self, agent_name, notification):
-        print(f"Notification from {agent_name}: {notification}")
 
 
 async def main():
@@ -93,7 +85,6 @@ async def main():
         psop=workflow,
         agent_cards=agent_cards,
         control_point=MyControlPoint(),
-        extension_callback=MyExtCallback(),
         a2at_env_path=".env",
         credentials_config="agent_credentials.json",
         runtime_intent="Diagnose SPN cross-city fault",
@@ -111,7 +102,7 @@ if __name__ == "__main__":
 | Responsibility | Handled by |
 |---------------|-----------|
 | Build A2ATransport, then WorkflowEngineClient over it | `execute_psop` |
-| Attach ControlPoint + ExtensionCallback + event emitter | `execute_psop` |
+| Attach ControlPoint + event emitter | `execute_psop` |
 | Create WorkflowExecutor with shared emitter | `execute_psop` |
 | Run workflow as asyncio task | `execute_psop` |
 | Emit `start` / `complete` / `error` / `close` lifecycle events | `execute_psop` |
@@ -277,23 +268,80 @@ For reusable strategies, implement `NegotiationStrategy` and inject it into
 
 ---
 
-## 5. ExtensionCallback: Reactive Hooks
+## 5. Pre-positioning: Authorization-T and Notification-T
 
-Distinct from `ControlPoint`: these react to agent-pushed A2A-T data rather
-than driving the workflow forward. They fire only when the corresponding
-handler is registered (the built-in `AuthorizationTHandler` /
-`NotificationTHandler` classes; Task-T/Negotiation-T are auto-registered,
-the other two are registered manually for inline handling).
+Authorization-T and Notification-T are one-shot operations sent via
+`ExtensionSender` **before** the workflow starts. They are not part of the
+in-workflow handler chain (`ExtensionRegistry` only auto-registers Task-T
+and Negotiation-T).
 
-| Method | Required | Fires When | You Decide |
-|--------|----------|-------------|-----------|
-| `on_authorization(agent_name, auth_request)` | No (default approve) | Agent pushes Authorization-T in a task response | approve/deny |
-| `on_notification(agent_name, notification)` | No (default no-op) | Agent pushes Notification-T in a task response | how to handle |
+| Operation | Method | Callback mechanism |
+|-----------|--------|-------------------|
+| Authorization-T | `sender.send_authorization(agent, instruction, input)` | Returns `SendMessageResult` directly |
+| Notification-T | `sender.send_notification(agent, instruction, input)` | Returns `SendMessageResult` (subscription confirmed). Subsequent SSE events are handled by the workbench agent's business code, not the SDK |
 
-> The subscription *result* (e.g. a recovery outcome pushed later) flows
-> back through `ExtensionSender.send_notification`'s response stream, not
-> through `on_notification`. That hook only fires for inline
-> Notification-T payloads in a `send_message` response.
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `agent_name` | `str` | Target agent name (must match `AgentCard.name`) |
+| `instruction` | `str` | Short instruction text; becomes `parts[].text` in the A2A message body |
+| `natural_language_input` | `str` | Natural language input passed to the A2A-T SDK to generate a structured extension prompt. The generated value is placed in the message `metadata` under the extension URI key (e.g. `https://.../Authorization-T/v1`). Falls back to this text as-is when SDK generation is unavailable |
+
+### Wire format
+
+The resulting A2A message sent to the agent:
+
+```
+parts[].text  = instruction
+metadata      = { "<extension-URI>": "<SDK-generated structured prompt>" }
+```
+
+Example for Authorization-T:
+
+```json
+{
+  "parts": [{"text": "Authorize diagnosis operations"}],
+  "metadata": {
+    "https://projects.tmforum.org/a2aproject/telecommunication/extensions/Authorization-T/v1": "<structured authorization policy>"
+  }
+}
+```
+
+### Return value
+
+Both methods return `SendMessageResult` containing the agent's response:
+
+| Field | Description |
+|-------|-------------|
+| `text` | Response text from the agent |
+| `task_state` | Final task state (e.g. `TASK_STATE_COMPLETED`, `WORKING`) |
+| `metadata` | Response metadata (merged task + artifact level) |
+
+### Example
+
+```python
+sender = ExtensionSender(transport)
+
+# Authorization-T: send whitelist strategy before workflow
+auth = await sender.send_authorization(
+    "SPN Domain Agent",
+    "Authorize diagnosis operations",
+    "Task type: fault diagnosis, operations: optical module replacement, port reset"
+)
+
+# Notification-T: subscribe to recovery results
+notif = await sender.send_notification(
+    "SPN Domain Agent",
+    "Subscribe to recovery notifications",
+    "Topic: service-recovery-execution-result"
+)
+```
+
+The `ExtensionCallback` interface (`on_authorization` / `on_notification`)
+and the `AuthorizationTHandler` / `NotificationTHandler` classes are
+reserved as extension points for custom inline handlers. They are not
+auto-registered in the default handler chain.
 
 ---
 
@@ -305,7 +353,7 @@ the send lifecycle.
 ```python
 from a2at_engine import (
     A2ATransport, WorkflowEngineClient, ExtensionSender,
-    ControlPoint, ExtensionCallback, WorkflowExecutor,
+    ControlPoint, WorkflowExecutor,
 )
 
 transport = A2ATransport(
@@ -317,12 +365,11 @@ transport = A2ATransport(
 
 # Workflow facade
 engine_client = WorkflowEngineClient(transport)
-engine_client.set_extension_callback(MyExtCallback())
 
 # One-shot pre-positioning facade (before the workflow)
 sender = ExtensionSender(transport)
-await sender.send_authorization("agent_a", "authorize", "Diagnose SPN fault")
-await sender.send_notification("agent_a", "subscribe recovery", "Diagnose SPN fault")
+auth_result = await sender.send_authorization("agent_a", "authorize", "Diagnose SPN fault")
+notif_result = await sender.send_notification("agent_a", "subscribe recovery", "Diagnose SPN fault")
 
 # Then run the workflow
 executor = WorkflowExecutor(
@@ -367,6 +414,10 @@ input.
 
 ## 8. Agent Authentication
 
+The SDK provides two authentication layers. They can be used independently or combined (custom provider runs first, credentials-based auth second).
+
+### 8.1 Credentials-Based Auth
+
 When an AgentCard declares `securitySchemes` and `securityRequirements`,
 the SDK logs in to obtain a token and attaches the auth header to outbound
 requests. Configure a JSON credentials file (see README for the full field
@@ -383,15 +434,89 @@ transport = A2ATransport(
 
 A dict may also be passed: `credentials_config={...}`.
 
+**Password Encryption:**
+
+Password fields support the `enc:<base64-iv>:<base64-ciphertext>` format
+(AES-256-GCM). The SDK reads the key from `A2AT_CRED_KEY` (32-byte hex)
+at runtime. To encrypt a password:
+
+```bash
+# Generate key (one-time)
+python -c "import secrets; print(secrets.token_hex(32))"
+
+# Encrypt
+export A2AT_CRED_KEY=<your-key-hex>
+python -c "from a2at_engine.client.credential_crypto import encrypt; print(encrypt('MyPassword'))"
+# Output: enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+```
+
+Or programmatically:
+
+```python
+from a2at_engine.client.credential_crypto import encrypt
+import os
+os.environ["A2AT_CRED_KEY"] = "a1b2c3d4..."
+encrypted = encrypt("MyPassword")
+# encrypted = "enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
+```
+
+### 8.2 Custom AuthProvider
+
+For non-standard auth (corporate SSO, external identity providers, agents
+with no `securitySchemes` that still require auth), implement the
+`AuthProvider` ABC:
+
+```python
+from a2at_engine import AuthProvider
+
+class SsoAuthProvider(AuthProvider):
+    def __init__(self, sso_client):
+        self._sso = sso_client
+
+    def apply_auth(self, agent_name: str, agent_card, headers: dict) -> None:
+        token = self._sso.get_access_token(agent_name)
+        headers["Authorization"] = f"Bearer {token}"
+```
+
+Register via `A2ATransport`:
+
+```python
+transport = A2ATransport(
+    agent_cards=agent_cards,
+    auth_provider=SsoAuthProvider(sso_client),
+    ssl_verify=False,
+)
+```
+
+`apply_auth` is called on **every** message send, regardless of whether
+the AgentCard declares `securitySchemes`. Typical use cases:
+
+- AgentCard has no `securitySchemes` but the server still requires auth
+- Auth tokens come from an external identity provider (e.g. corporate SSO)
+- Non-standard auth headers (e.g. `X-Custom-Token`, `X-Request-Signature`)
+
+### 8.3 Combining Both
+
+```python
+transport = A2ATransport(
+    agent_cards=agent_cards,
+    credentials_config="agent_credentials.json",  # credentials auth
+    auth_provider=SsoAuthProvider(sso_client),     # custom auth (runs first)
+    ssl_verify=False,
+)
+```
+
 ---
 
 ## 9. Integration Checklist
 
 1. [ ] Install: `pip install a2at-engine`
 2. [ ] Implement `ControlPoint` (at minimum: `on_task` + `on_route`)
-3. [ ] Optionally implement `ExtensionCallback` (`on_authorization` / `on_notification`)
-4. [ ] Get AgentCards (from registry or custom source)
-5. [ ] Load a PSOP workflow (`load_psop`) or build a `Workflow` from dict
-6. [ ] Configure agent auth (optional: `credentials_config`)
+3. [ ] Get AgentCards (from registry or custom source)
+4. [ ] Load a PSOP workflow (`load_psop`) or build a `Workflow` from dict
+5. [ ] Configure agent auth (optional: `credentials_config` or `auth_provider`)
+6. [ ] Pre-position Authorization-T / Notification-T via `ExtensionSender` (optional)
+7. [ ] Run with `execute_psop` (Layer 2) or `WorkflowExecutor` (Layer 1)
+8. [ ] Drain the event stream; persist results in `on_finish`
 7. [ ] Run with `execute_psop` (Layer 2) or `WorkflowExecutor` (Layer 1)
 8. [ ] Drain the event stream; persist results in `on_finish`

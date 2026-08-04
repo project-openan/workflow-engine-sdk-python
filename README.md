@@ -62,8 +62,8 @@ flowchart TB
 ```python
 import asyncio
 from a2at_engine import (
-    execute_psop, ControlPoint, ExtensionCallback, RouteDecision,
-    RegistryClient, load_psop,
+    execute_psop, ControlPoint, RouteDecision,
+    TaskResponse, RegistryClient, load_psop,
 )
 
 
@@ -79,14 +79,6 @@ class MyControlPoint(ControlPoint):
         # conditions: List[JumpCondition]，每个含 .step 与 .condition
         # 用你的 LLM 或业务逻辑选一个分支
         return RouteDecision(next_step=conditions[0].step)
-
-
-class MyExtCallback(ExtensionCallback):
-    async def on_authorization(self, agent_name, auth_request):
-        return True  # 批准
-
-    async def on_notification(self, agent_name, notification):
-        print(f"通知来自 {agent_name}: {notification}")
 
 
 async def main():
@@ -106,7 +98,6 @@ async def main():
         psop=workflow,
         agent_cards=agent_cards,
         control_point=MyControlPoint(),
-        extension_callback=MyExtCallback(),
         a2at_env_path=".env",
         credentials_config="agent_credentials.json",
         runtime_intent="诊断 SPN 跨市故障",
@@ -123,7 +114,7 @@ if __name__ == "__main__":
 
 | 层 | 入口 | 处理 | 你提供 |
 |---|---|---|---|
-| 2（高） | `execute_psop()` | 事件流、生命周期、取消、onFinish | ControlPoint + ExtensionCallback + AgentCards + 配置 |
+| 2（高） | `execute_psop()` | 事件流、生命周期、取消、onFinish | ControlPoint + AgentCards + 配置 |
 | 1（中） | `WorkflowExecutor` | DAG 遍历、上下文组装、调度 | ControlPoint + WorkflowEngineClient + Workflow |
 | 0（低） | `A2ATransport` + 两个门面 | A2A 发送、认证、扩展、SSE | AgentCards + 配置 |
 
@@ -140,15 +131,6 @@ if __name__ == "__main__":
 | `on_route(step_name, results, conditions)` | 是 | 步骤有条件分支 | 走哪个分支 |
 | `on_negotiation(agent_name, text, result)` | 否（默认通用澄清） | Agent 返回 INPUT_REQUIRED | 补充澄清文本 |
 
-### ExtensionCallback（被动响应）
-
-| 方法 | 必需 | 触发时机 | 决定 |
-|---|---|---|---|
-| `on_authorization(agent_name, auth_request)` | 否（默认批准） | Agent 在任务响应中推送 Authorization-T | 批准 / 拒绝 |
-| `on_notification(agent_name, notification)` | 否（默认 no-op） | Agent 在任务响应中推送 Notification-T | 如何处理通知 |
-
-> 订阅结果（如 Agent 后续推送的恢复结论）通过 `send_notification` 的响应流返回，不经过 `on_notification`。后者仅在 Agent 在 `send_message` 响应中主动附带 Notification-T 时触发。
-
 ## A2ATransport + 门面（第 0 层）
 
 ```python
@@ -163,24 +145,25 @@ transport = A2ATransport(
 
 # 工作流发送门面
 engine_client = WorkflowEngineClient(transport)
-engine_client.set_extension_callback(MyExtCallback())
 
 # 一次性预置门面（工作流开始前）
 sender = ExtensionSender(transport)
-await sender.send_authorization("agent_a", "授权诊断操作", "诊断 SPN 跨市故障")
-await sender.send_notification("agent_a", "订阅恢复结果通知", "诊断 SPN 跨市故障")
+auth_result = await sender.send_authorization("agent_a", "授权诊断操作", "诊断 SPN 跨市故障")
+notif_result = await sender.send_notification("agent_a", "订阅恢复结果通知", "诊断 SPN 跨市故障")
 ```
 
 两个门面共享同一个 transport，不重复 wire 代码。
+
+**前置操作的回调**：Authorization-T 和 Notification-T 是工作流开始前的一次性操作，通过 `ExtensionSender` 发送。发送结果直接通过返回的 `SendMessageResult` 获取，无需额外的回调接口。
 
 ## A2A-T 扩展
 
 | 扩展 | 归属 | 说明 |
 |---|---|---|
-| Task-T | 工作流链路 | 发送时由 SDK 生成结构化任务提示并注入 metadata |
-| Negotiation-T | 工作流链路 | 接收时提取协商上下文，驱动自动循环 |
-| Authorization-T | 一次性预置 | 工作流开始前通过 ExtensionSender 发送 |
-| Notification-T | 一次性预置 | 工作流开始前订阅结果通知（长连接 SSE） |
+| Task-T | 工作流链路 | 发送时由 SDK 生成结构化任务提示并注入 `metadata["...Task-T/v1"]` |
+| Negotiation-T | 工作流链路 | 接收时从 `metadata["...NEGOTIATION-T"]` 提取协商上下文，驱动自动循环 |
+| Authorization-T | 一次性预置 | 工作流开始前通过 `ExtensionSender` 发送，`instruction` → `parts[].text`，`natural_language_input` → SDK 生成结构化策略 → `metadata["...Authorization-T/v1"]` |
+| Notification-T | 一次性预置 | 工作流开始前通过 `ExtensionSender` 发送，`instruction` → `parts[].text`，`natural_language_input` → SDK 生成结构化订阅 → `metadata["...Notification-T/v1"]` |
 
 `ExtensionRegistry` 自动注册 Task-T 与 Negotiation-T（工作流内处理器）；Authorization-T / Notification-T 是预置操作，不自动注册，其 handler 类保留供手动注册处理 Agent 内联推送的数据。
 
@@ -218,6 +201,44 @@ await sender.send_notification("agent_a", "订阅恢复结果通知", "诊断 SP
 | accept_header | 否 | - | 自定义 Accept 头 |
 
 智能体名称须与 AgentCard 的 `name` 一致；认证方案名须与 `securitySchemes` 键一致。也可直接传 dict：`credentials_config=dict`。参见 `examples/agent_credentials.example.json`。
+
+**密码加密:**
+
+`request_fields` 中的密码字段支持 `enc:` 前缀加密格式 `enc:<base64-iv>:<base64-ciphertext>`，算法为 AES-256-GCM。SDK 运行时从 `A2AT_CRED_KEY` 环境变量读取密钥自动解密。
+
+```bash
+# 1. 生成 32 字节密钥 (仅首次)
+python -c "import secrets; print(secrets.token_hex(32))"
+
+# 2. 设置密钥环境变量
+export A2AT_CRED_KEY=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
+
+# 3. 加密密码
+python -c "from a2at_engine.client.credential_crypto import encrypt; print(encrypt('Admin@123'))"
+# 输出: enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+```
+
+将输出的 `enc:...` 值填入 credentials JSON 的密码字段即可。
+
+### 自定义 AuthProvider
+
+对于非标准认证（企业 SSO、外部身份提供商、AgentCard 无 `securitySchemes` 但仍需认证），实现 `AuthProvider` ABC：
+
+```python
+from a2at_engine import AuthProvider
+
+class SsoAuthProvider(AuthProvider):
+    def apply_auth(self, agent_name: str, agent_card, headers: dict) -> None:
+        token = sso_client.get_access_token(agent_name)
+        headers["Authorization"] = f"Bearer {token}"
+
+transport = A2ATransport(
+    agent_cards=agent_cards,
+    auth_provider=SsoAuthProvider(),
+)
+```
+
+两种方式可组合使用：`AuthProvider` 先执行，credentials 认证后执行，各自向请求头注入认证信息。
 
 ## 文件结构
 

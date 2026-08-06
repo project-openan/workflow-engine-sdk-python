@@ -1,4 +1,4 @@
-# a2at-engine
+﻿# workflow-engine
 
 Standalone workflow execution SDK for A2A-T multi-agent orchestration. The host agent executes orchestration-center workflows (PSOP) while retaining full control over A2A communication, A2A-T extensions, and routing decisions. The SDK is self-contained and does not depend on the orchestration center.
 
@@ -61,7 +61,7 @@ flowchart TB
 
 ```python
 import asyncio
-from a2at_engine import (
+from workflow_engine import (
     execute_psop, ControlPoint, RouteDecision,
     TaskResponse, RegistryClient, load_psop,
 )
@@ -133,7 +133,7 @@ Most integrations use Layer 2. Use Layer 1 for manual control. Use `ExtensionSen
 ## A2ATransport + Facades (Layer 0)
 
 ```python
-from a2at_engine import A2ATransport, WorkflowEngineClient, ExtensionSender
+from workflow_engine import A2ATransport, WorkflowEngineClient, ExtensionSender
 
 transport = A2ATransport(
     agent_cards=agent_cards,
@@ -213,7 +213,7 @@ python -c "import secrets; print(secrets.token_hex(32))"
 export A2AT_CRED_KEY=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
 
 # 3. Encrypt the password
-python -c "from a2at_engine.client.credential_crypto import encrypt; print(encrypt('Admin@123'))"
+python -c "from workflow_engine.client.credential_crypto import encrypt; print(encrypt('Admin@123'))"
 # Output: enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
 ```
 
@@ -224,7 +224,7 @@ Paste the `enc:...` output into the password field of your credentials JSON.
 For non-standard auth (corporate SSO, external identity providers, agents with no `securitySchemes` that still require auth), implement the `AuthProvider` ABC:
 
 ```python
-from a2at_engine import AuthProvider
+from workflow_engine import AuthProvider
 
 class SsoAuthProvider(AuthProvider):
     def apply_auth(self, agent_name: str, agent_card, headers: dict) -> None:
@@ -251,7 +251,7 @@ workflow-exec-engine/
 |-- examples/
 |   |-- quickstart.py
 |   `-- execute_psop_demo.py
-`-- a2at_engine/
+`-- workflow_engine/
     |-- __init__.py         # public API exports
     |-- runner.py           # execute_psop high-level runner
     |-- core/               # core execution

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -28,7 +28,7 @@ from typing import Dict, Optional
 import httpx
 from loguru import logger
 
-from a2at_engine.client.credential_crypto import decrypt_if_needed
+from workflow_engine.client.credential_crypto import decrypt_if_needed
 
 try:
     from a2a.client.auth import CredentialService

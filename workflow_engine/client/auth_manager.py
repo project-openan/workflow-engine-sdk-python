@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -32,9 +32,9 @@ except ImportError:
     AfterArgs = None
 
 
-from a2at_engine.client.credential_service import AgentAuthManager, CustomAuthInterceptor
-from a2at_engine.client.extension_interceptor import ExtensionInterceptor
-from a2at_engine.client.auth_provider import AuthProvider
+from workflow_engine.client.credential_service import AgentAuthManager, CustomAuthInterceptor
+from workflow_engine.client.extension_interceptor import ExtensionInterceptor
+from workflow_engine.client.auth_provider import AuthProvider
 
 
 class AuthManager:

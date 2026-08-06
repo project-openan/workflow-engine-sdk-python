@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -31,9 +31,9 @@ from typing import Any, Dict, Optional, List, TYPE_CHECKING
 from loguru import logger
 
 if TYPE_CHECKING:
-    from a2at_engine.control.control_points import ControlPoint
+    from workflow_engine.control.control_points import ControlPoint
 
-from a2at_engine.core.models import SendMessageResult
+from workflow_engine.core.models import SendMessageResult
 
 
 class ExtensionHandler(ABC):
@@ -53,10 +53,12 @@ class ExtensionHandler(ABC):
 class TaskTHandler(ExtensionHandler):
     extension_keyword = "Task-T"
 
+    def __init__(self):
+        self._prompt_cache: Dict[str, str] = {}
+
     async def before_send(self, agent_card, message_text, metadata, a2at_client=None, control_point=None):
         if not a2at_client:
             return metadata
-        # Skip Task-T prompt generation for negotiation follow-up tasks
         if "[NEGOTIATION_RESOLUTION]" in message_text:
             logger.info("[Task-T] Skipping prompt generation for negotiation follow-up")
             return metadata
@@ -69,9 +71,17 @@ class TaskTHandler(ExtensionHandler):
                 break
         if not task_t_uri:
             return metadata
-        # Skip if caller already pre-set the Task-T prompt in metadata
         if task_t_uri in metadata:
             logger.info(f"[Task-T] Metadata already preset, skipping generation")
+            return metadata
+        cache_key = message_text
+        if cache_key in self._prompt_cache:
+            cached = self._prompt_cache[cache_key]
+            metadata[task_t_uri] = cached
+            logger.info(
+                f"[Task-T] Cache hit for '{getattr(agent_card, 'name', '?')}', "
+                f"{len(cached)} chars"
+            )
             return metadata
         try:
             import asyncio
@@ -79,6 +89,7 @@ class TaskTHandler(ExtensionHandler):
             if hasattr(prompt_result, "success") and prompt_result.success:
                 if hasattr(prompt_result, "prompt_text") and prompt_result.prompt_text:
                     metadata[task_t_uri] = prompt_result.prompt_text
+                    self._prompt_cache[cache_key] = prompt_result.prompt_text
                     logger.info(f"[Task-T] Generated prompt for '{getattr(agent_card, 'name', '?')}', {len(prompt_result.prompt_text)} chars")
                     logger.debug(f"[Task-T] Prompt content: [{prompt_result.prompt_text}]")
             else:

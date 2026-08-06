@@ -1,7 +1,7 @@
-# A2A-T Engine SDK - Design
+﻿# A2A-T Engine SDK - Design
 
-> Architecture and design rationale for the `a2at-engine` Python SDK and the
-> `a2at-engine-java` Java SDK. This document describes the system as shipped
+> Architecture and design rationale for the `workflow-engine` Python SDK and the
+> `workflow-engine-java` Java SDK. This document describes the system as shipped
 > in v1.0; the two SDKs are intentionally parallel and maintain feature
 > parity. It is written for engineers integrating or extending the SDK, not
 > as a walkthrough of any particular bug-fix history.

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -16,14 +16,14 @@
 #    under the License.
 
 
-from a2at_engine.core.models import (
+from workflow_engine.core.models import (
     Workflow, WorkflowStep, Task, JumpCondition,
     StepType, TaskStatus, ExecutionResult,
     SendMessageResult, TaskRequest, TaskResponse, RouteDecision,
     WorkflowSearchResult,
 )
-from a2at_engine.core.context_builder import ContextBuilder
-from a2at_engine.core.executor import WorkflowExecutor
+from workflow_engine.core.context_builder import ContextBuilder
+from workflow_engine.core.executor import WorkflowExecutor
 
 __all__ = [
     "Workflow", "WorkflowStep", "Task", "JumpCondition",

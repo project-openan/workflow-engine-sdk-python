@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -25,7 +25,7 @@ This example shows the basic flow:
 """
 
 import asyncio
-from a2at_engine import (
+from workflow_engine import (
     WorkflowExecutor,
     ControlPoint,
     WorkflowEngineClient,
@@ -75,7 +75,7 @@ async def main():
     engine_client = WorkflowEngineClient(transport)
 
     # 3. Load a workflow from the orchestration center (external API)
-    from a2at_engine import load_psop
+    from workflow_engine import load_psop
     workflow = await load_psop(
         base_url="http://127.0.0.1:5001",
         psop_id="your-psop-id-here",

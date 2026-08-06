@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -16,6 +16,6 @@
 #    under the License.
 
 
-from a2at_engine.registry.registry_client import RegistryClient, load_psop, search_psop
+from workflow_engine.registry.registry_client import RegistryClient, load_psop, search_psop
 
 __all__ = ["RegistryClient", "load_psop", "search_psop"]

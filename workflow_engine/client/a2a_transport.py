@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -44,16 +44,16 @@ except ImportError:
     _A2AT_AVAILABLE = False
     A2ATClient = None
 
-from a2at_engine.client.ssl_context import create_ssl_context
-from a2at_engine.client.auth_manager import AuthManager
-from a2at_engine.client.protocol_logger import log_request, log_response
-from a2at_engine.client.sse_normalization import apply_sse_normalization
-from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
-from a2at_engine.control.control_points import EventType
-from a2at_engine.core.models import SendMessageResult
-from a2at_engine.client.credential_crypto import decrypt_if_needed as _decrypt_credential
-from a2at_engine.client.env_file_loader import load_to_environ as _load_env_file
-from a2at_engine.client.auth_provider import AuthProvider
+from workflow_engine.client.ssl_context import create_ssl_context
+from workflow_engine.client.auth_manager import AuthManager
+from workflow_engine.client.protocol_logger import log_request, log_response
+from workflow_engine.client.sse_normalization import apply_sse_normalization
+from workflow_engine.client.agentcard_normalizer import normalize_agent_dict
+from workflow_engine.control.control_points import EventType
+from workflow_engine.core.models import SendMessageResult
+from workflow_engine.client.credential_crypto import decrypt_if_needed as _decrypt_credential
+from workflow_engine.client.env_file_loader import load_to_environ as _load_env_file
+from workflow_engine.client.auth_provider import AuthProvider
 
 # Apply SSE response normalization once at import time.
 apply_sse_normalization()
@@ -225,7 +225,7 @@ class A2ATransport:
         )
         interceptors = self._auth_manager.get_interceptors(agent_card.name)
         if self._auth_provider is not None:
-            from a2at_engine.client.auth_manager import AuthProviderInterceptor
+            from workflow_engine.client.auth_manager import AuthProviderInterceptor
             interceptors = list(interceptors) + [AuthProviderInterceptor(
                 self._auth_provider, agent_card.name)]
         logger.info(f"[Transport] Created A2A client for {agent_card.name}: protocol={protocol_bindings}, streaming={streaming}, interceptors={len(interceptors)}")

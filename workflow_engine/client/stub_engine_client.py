@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -11,8 +11,8 @@ verify the workflow engine dispatches correctly without real A2A.
 """
 
 from typing import Any, Dict, List, Optional
-from a2at_engine.core.models import SendMessageResult
-from a2at_engine.control.control_points import EventType
+from workflow_engine.core.models import SendMessageResult
+from workflow_engine.control.control_points import EventType
 
 
 class StubWorkflowEngineClient:

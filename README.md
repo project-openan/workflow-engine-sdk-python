@@ -1,4 +1,4 @@
-# a2at-engine
+﻿# workflow-engine
 
 独立工作流执行 SDK，支持宿主 Agent 执行编排中心工作流（PSOP），同时保留对 A2A 通信、A2A-T 扩展与路由决策的完全控制权。SDK 自包含，不依赖编排中心任何代码。
 
@@ -60,7 +60,7 @@ flowchart TB
 
 ```python
 import asyncio
-from a2at_engine import (
+from workflow_engine import (
     execute_psop, ControlPoint, RouteDecision,
     TaskResponse, RegistryClient, load_psop,
 )
@@ -133,7 +133,7 @@ if __name__ == "__main__":
 ## A2ATransport + 门面（第 0 层）
 
 ```python
-from a2at_engine import A2ATransport, WorkflowEngineClient, ExtensionSender
+from workflow_engine import A2ATransport, WorkflowEngineClient, ExtensionSender
 
 transport = A2ATransport(
     agent_cards=agent_cards,
@@ -213,7 +213,7 @@ python -c "import secrets; print(secrets.token_hex(32))"
 export A2AT_CRED_KEY=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
 
 # 3. 加密密码
-python -c "from a2at_engine.client.credential_crypto import encrypt; print(encrypt('Admin@123'))"
+python -c "from workflow_engine.client.credential_crypto import encrypt; print(encrypt('Admin@123'))"
 # 输出: enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
 ```
 
@@ -224,7 +224,7 @@ python -c "from a2at_engine.client.credential_crypto import encrypt; print(encry
 对于非标准认证（企业 SSO、外部身份提供商、AgentCard 无 `securitySchemes` 但仍需认证），实现 `AuthProvider` ABC：
 
 ```python
-from a2at_engine import AuthProvider
+from workflow_engine import AuthProvider
 
 class SsoAuthProvider(AuthProvider):
     def apply_auth(self, agent_name: str, agent_card, headers: dict) -> None:
@@ -251,7 +251,7 @@ workflow-exec-engine/
 ├── examples/
 │   ├── quickstart.py
 │   └── execute_psop_demo.py
-└── a2at_engine/
+└── workflow_engine/
     ├── __init__.py         # 公共 API 导出
     ├── runner.py           # execute_psop 高层运行器
     ├── core/               # 核心执行

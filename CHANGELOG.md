@@ -5,6 +5,19 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.0.2] - 2026-08-06
+
+### Fixed
+- **Task-T prompt caching**: `TaskTHandler` now caches generated prompts by `message_text`, so identical task descriptions sent to multiple agents only call the LLM once (subsequent agents get cache hit, saving ~20s each)
+
+### Added
+- **Per-handler timing logs**: `_run_before_send_handlers` now logs each handler's execution time individually (e.g. `TaskTHandler.before_send for AgentX: 0.01s`)
+
+## [0.0.1] - 2026-08-06
+
+### Changed
+- **Package rename**: `a2at-engine` → `workflow-exec-engine` (PyPI name), `a2at_engine` → `workflow_engine` (import name), aligning with the Java SDK (`workflow-engine` module)
+
 ## [1.0.1] - 2026-08-02
 
 ### Fixed

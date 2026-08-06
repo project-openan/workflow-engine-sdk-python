@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -25,7 +25,7 @@ import json
 from typing import List, Any
 from loguru import logger
 
-from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
+from workflow_engine.client.agentcard_normalizer import normalize_agent_dict
 
 
 
@@ -42,7 +42,7 @@ async def load_psop(
     Set ssl_verify=False for self-signed certs (dev only).
     """
     import httpx
-    from a2at_engine.core.models import Workflow
+    from workflow_engine.core.models import Workflow
     url = f"{base_url}/api/v1/orchestrate/psop/{psop_id}"
     params = {}
     if access_token:
@@ -73,7 +73,7 @@ async def search_psop(
     LoadPsop.search which returns WorkflowSearchResult.
     """
     import httpx
-    from a2at_engine.core.models import WorkflowSearchResult
+    from workflow_engine.core.models import WorkflowSearchResult
     url = f"{base_url}/api/v1/orchestrate/search"
     params = {}
     if access_token:

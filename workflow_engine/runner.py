@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -31,11 +31,11 @@ from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Union
 
 from loguru import logger
 
-from a2at_engine.core.models import Workflow, ExecutionResult
-from a2at_engine.core.executor import WorkflowExecutor
-from a2at_engine.client.engine_client import WorkflowEngineClient
-from a2at_engine.client.a2a_transport import A2ATransport
-from a2at_engine.control.control_points import ControlPoint, EventCallback
+from workflow_engine.core.models import Workflow, ExecutionResult
+from workflow_engine.core.executor import WorkflowExecutor
+from workflow_engine.client.engine_client import WorkflowEngineClient
+from workflow_engine.client.a2a_transport import A2ATransport
+from workflow_engine.control.control_points import ControlPoint, EventCallback
 
 
 def _serialize(data: Any) -> Any:

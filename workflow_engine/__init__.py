@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -20,7 +20,7 @@
 
 Quick start:
 
-    from a2at_engine import (
+    from workflow_engine import (
         WorkflowExecutor, ControlPoint,
         A2ATransport, WorkflowEngineClient, ExtensionSender,
         Workflow, TaskResponse, RouteDecision,
@@ -50,26 +50,26 @@ Quick start:
     result = await executor.run()
 """
 
-from a2at_engine.core import (
+from workflow_engine.core import (
     Workflow, WorkflowStep, Task, JumpCondition,
     StepType, TaskStatus, ExecutionResult,
     SendMessageResult, TaskRequest, TaskResponse, RouteDecision,
     WorkflowSearchResult,
     ContextBuilder, WorkflowExecutor,
 )
-from a2at_engine.client import (
+from workflow_engine.client import (
     WorkflowEngineClient, A2ATransport, ExtensionSender, AuthManager,
     ExtensionHandler, TaskTHandler, NegotiationTHandler, ExtensionRegistry,
     A2ATExtension, AuthProvider,
     create_ssl_context, normalize_agent_dict, StubWorkflowEngineClient,
     log_request, log_response, log_response_event,
 )
-from a2at_engine.control import ControlPoint, EventCallback, EventType
-from a2at_engine.control import (
+from workflow_engine.control import ControlPoint, EventCallback, EventType
+from workflow_engine.control import (
     NegotiationStrategy, DefaultControlPoint,
 )
-from a2at_engine.registry import RegistryClient, load_psop, search_psop
-from a2at_engine.runner import execute_psop
+from workflow_engine.registry import RegistryClient, load_psop, search_psop
+from workflow_engine.runner import execute_psop
 
 __all__ = [
     # Core
@@ -92,4 +92,4 @@ __all__ = [
     "execute_psop",
 ]
 
-__version__ = "1.0.1"
+__version__ = "0.0.2"

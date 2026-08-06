@@ -6,8 +6,8 @@
 
 | Role | Python | Java |
 |------|--------|------|
-| Execution Engine SDK | `workflow-exec-engine` (`a2at_engine` v1.0.0) | `workflow-exec-engine-java` (`a2at-engine` module) |
-| A2A-T Foundation SDK | bundled in `a2at_engine` (a2a_t pip package) | `a2a-t-sdk-java` (a2a-t-core, a2a-t-client, a2a-t-server, a2a-t-llm, a2a-t-negotiation, a2a-t-prompt, a2a-t-resources) |
+| Execution Engine SDK | `workflow-exec-engine` (`workflow_engine` v1.0.0) | `workflow-exec-engine-java` (`workflow-engine` module) |
+| A2A-T Foundation SDK | bundled in `workflow_engine` (a2a_t pip package) | `a2a-t-sdk-java` (a2a-t-core, a2a-t-client, a2a-t-server, a2a-t-llm, a2a-t-negotiation, a2a-t-prompt, a2a-t-resources) |
 | Demo Agents | `orchestration-center/samples/agents/` | `workflow-exec-engine-java/samples/src/.../agents/` |
 
 ### Parity Principle

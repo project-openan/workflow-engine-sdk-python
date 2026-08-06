@@ -1,11 +1,11 @@
-"""Quick start using execute_psop (recommended high-level API).
+﻿"""Quick start using execute_psop (recommended high-level API).
 
 This is the simplest way to integrate the SDK: implement ControlPoint
 (only on_task and on_route required), call execute_psop, drain events.
 """
 
 import asyncio
-from a2at_engine import (
+from workflow_engine import (
     execute_psop, ControlPoint, RegistryClient, load_psop,
     TaskResponse, RouteDecision, EventType,
 )

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -42,15 +42,15 @@ try:
 except ImportError:
     _A2A_AVAILABLE = False
 
-from a2at_engine.client.a2a_transport import A2ATransport
-from a2at_engine.client.auth_manager import AuthManager
-from a2at_engine.client.extension_handlers import ExtensionRegistry, ExtensionHandler
-from a2at_engine.client.protocol_logger import log_request, log_response
-from a2at_engine.control.control_points import (
+from workflow_engine.client.a2a_transport import A2ATransport
+from workflow_engine.client.auth_manager import AuthManager
+from workflow_engine.client.extension_handlers import ExtensionRegistry, ExtensionHandler
+from workflow_engine.client.protocol_logger import log_request, log_response
+from workflow_engine.control.control_points import (
     EventCallback, EventType,
 )
-from a2at_engine.core.models import SendMessageResult
-from a2at_engine.client.extensions import A2ATExtension
+from workflow_engine.core.models import SendMessageResult
+from workflow_engine.client.extensions import A2ATExtension
 
 # Type alias for the negotiation resolver callback. May be sync (returning
 # str/None) or async (returning an awaitable of str/None). The SDK awaits
@@ -339,10 +339,16 @@ class WorkflowEngineClient:
         metadata: Dict[str, Any] = dict(preset_metadata) if preset_metadata else {}
         ext_uris = self._transport._get_extensions(agent_card)
         handlers = self._extension_registry.get_handlers_for_extensions(ext_uris)
+        agent_name = getattr(agent_card, "name", "?")
         for handler in handlers:
+            t_h = time.time()
             metadata = await handler.before_send(
                 agent_card, message, metadata,
                 self._transport.get_a2at_client(), self._control_point,
+            )
+            logger.info(
+                f"[Timing] Handler {type(handler).__name__}.before_send "
+                f"for {agent_name}: {time.time()-t_h:.2f}s"
             )
         return metadata
 

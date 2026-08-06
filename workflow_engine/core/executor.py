@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -23,15 +23,15 @@ from collections import deque
 from typing import Dict, Any, List, Optional, TYPE_CHECKING
 from loguru import logger
 
-from a2at_engine.core.models import (
+from workflow_engine.core.models import (
     Workflow, WorkflowStep, Task, StepType, TaskStatus,
     ExecutionResult, TaskRequest, TaskResponse, RouteDecision,
 )
-from a2at_engine.core.context_builder import ContextBuilder
-from a2at_engine.control.control_points import ControlPoint, EventCallback
+from workflow_engine.core.context_builder import ContextBuilder
+from workflow_engine.control.control_points import ControlPoint, EventCallback
 
 if TYPE_CHECKING:
-    from a2at_engine.client.engine_client import WorkflowEngineClient
+    from workflow_engine.client.engine_client import WorkflowEngineClient
 
 
 class WorkflowExecutor:

@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -21,7 +21,7 @@ from collections import deque
 from typing import Dict, Any, List, Optional
 from loguru import logger
 
-from a2at_engine.core.models import Workflow, WorkflowStep
+from workflow_engine.core.models import Workflow, WorkflowStep
 
 
 class ContextBuilder:

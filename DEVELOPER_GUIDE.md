@@ -1,6 +1,6 @@
-# Developer Guide: a2at-engine SDK
+﻿# Developer Guide: workflow-engine SDK
 
-Integration guide for the a2at-engine Python SDK: installation, the layered
+Integration guide for the workflow-engine Python SDK: installation, the layered
 entry points, ControlPoint implementation, event handling, agent
 authentication, and the A2A-T extension model. For the architecture
 rationale, see [DESIGN.md](DESIGN.md).
@@ -10,7 +10,7 @@ rationale, see [DESIGN.md](DESIGN.md).
 ## 1. Installation
 
 ```bash
-pip install a2at-engine
+pip install workflow-engine
 ```
 
 Dependencies (auto-installed): `a2a-sdk`, `a2a-t-sdk`, `httpx`, `loguru`,
@@ -19,8 +19,8 @@ Dependencies (auto-installed): `a2a-sdk`, `a2a-t-sdk`, `httpx`, `loguru`,
 Verify:
 
 ```python
-import a2at_engine
-print(a2at_engine.__version__)  # 1.0.1
+import workflow_engine
+print(workflow_engine.__version__)  # 1.0.1
 ```
 
 ---
@@ -51,7 +51,7 @@ pre-positioning). See DESIGN.md for the rationale.
 
 ```python
 import asyncio
-from a2at_engine import (
+from workflow_engine import (
     execute_psop, ControlPoint, RouteDecision,
     TaskResponse, RegistryClient, load_psop,
 )
@@ -347,7 +347,7 @@ Use this layer directly when you need manual control of the transport and
 the send lifecycle.
 
 ```python
-from a2at_engine import (
+from workflow_engine import (
     A2ATransport, WorkflowEngineClient, ExtensionSender,
     ControlPoint, WorkflowExecutor,
 )
@@ -442,14 +442,14 @@ python -c "import secrets; print(secrets.token_hex(32))"
 
 # Encrypt
 export A2AT_CRED_KEY=<your-key-hex>
-python -c "from a2at_engine.client.credential_crypto import encrypt; print(encrypt('MyPassword'))"
+python -c "from workflow_engine.client.credential_crypto import encrypt; print(encrypt('MyPassword'))"
 # Output: enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
 ```
 
 Or programmatically:
 
 ```python
-from a2at_engine.client.credential_crypto import encrypt
+from workflow_engine.client.credential_crypto import encrypt
 import os
 os.environ["A2AT_CRED_KEY"] = "a1b2c3d4..."
 encrypted = encrypt("MyPassword")
@@ -463,7 +463,7 @@ with no `securitySchemes` that still require auth), implement the
 `AuthProvider` ABC:
 
 ```python
-from a2at_engine import AuthProvider
+from workflow_engine import AuthProvider
 
 class SsoAuthProvider(AuthProvider):
     def __init__(self, sso_client):
@@ -506,7 +506,7 @@ transport = A2ATransport(
 
 ## 9. Integration Checklist
 
-1. [ ] Install: `pip install a2at-engine`
+1. [ ] Install: `pip install workflow-exec-engine`
 2. [ ] Implement `ControlPoint` (at minimum: `on_task` + `on_route`)
 3. [ ] Get AgentCards (from registry or custom source)
 4. [ ] Load a PSOP workflow (`load_psop`) or build a `Workflow` from dict

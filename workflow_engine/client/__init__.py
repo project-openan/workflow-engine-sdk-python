@@ -1,4 +1,4 @@
-# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
@@ -16,25 +16,25 @@
 #    under the License.
 
 
-from a2at_engine.client.engine_client import WorkflowEngineClient
-from a2at_engine.client.a2a_transport import A2ATransport
-from a2at_engine.client.extension_sender import ExtensionSender
-from a2at_engine.client.auth_manager import AuthManager
-from a2at_engine.client.extension_handlers import (
+from workflow_engine.client.engine_client import WorkflowEngineClient
+from workflow_engine.client.a2a_transport import A2ATransport
+from workflow_engine.client.extension_sender import ExtensionSender
+from workflow_engine.client.auth_manager import AuthManager
+from workflow_engine.client.extension_handlers import (
     ExtensionHandler, TaskTHandler, NegotiationTHandler, ExtensionRegistry,
 )
-from a2at_engine.client.ssl_context import create_ssl_context
-from a2at_engine.client.credential_service import AgentCredentialService, AgentAuthManager, CustomAuthInterceptor
-from a2at_engine.client.extensions import A2ATExtension
-from a2at_engine.client.credential_crypto import encrypt, decrypt_if_needed
-from a2at_engine.client.env_file_loader import load_to_environ
-from a2at_engine.client.auth_provider import AuthProvider
-from a2at_engine.client.auth_manager import AuthProviderInterceptor
-from a2at_engine.client.extension_interceptor import ExtensionInterceptor
-from a2at_engine.client.agentcard_normalizer import normalize_agent_dict
+from workflow_engine.client.ssl_context import create_ssl_context
+from workflow_engine.client.credential_service import AgentCredentialService, AgentAuthManager, CustomAuthInterceptor
+from workflow_engine.client.extensions import A2ATExtension
+from workflow_engine.client.credential_crypto import encrypt, decrypt_if_needed
+from workflow_engine.client.env_file_loader import load_to_environ
+from workflow_engine.client.auth_provider import AuthProvider
+from workflow_engine.client.auth_manager import AuthProviderInterceptor
+from workflow_engine.client.extension_interceptor import ExtensionInterceptor
+from workflow_engine.client.agentcard_normalizer import normalize_agent_dict
 
-from a2at_engine.client.protocol_logger import log_request, log_response, log_response_event
-from a2at_engine.client.stub_engine_client import StubWorkflowEngineClient
+from workflow_engine.client.protocol_logger import log_request, log_response, log_response_event
+from workflow_engine.client.stub_engine_client import StubWorkflowEngineClient
 
 __all__ = [
     "WorkflowEngineClient", "A2ATransport", "ExtensionSender", "AuthManager",

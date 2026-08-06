@@ -1,10 +1,10 @@
-"""End-to-end verification of a2at-engine SDK using mocks (no real agents).
+﻿"""End-to-end verification of workflow-engine SDK using mocks (no real agents).
 
 Verifies: import, step_type case parsing, execute_psop event flow,
 workflow_complete lifecycle, ControlPoint decision dispatch, on_finish hook.
 """
 import asyncio
-from a2at_engine import (
+from workflow_engine import (
     execute_psop, ControlPoint, Workflow, TaskResponse, RouteDecision, EventType,
 )
 
@@ -15,7 +15,7 @@ class StubEngineClient:
         self.sent = []
     async def send_message(self, agent_name, message, context_id=None, metadata=None):
         self.sent.append((agent_name, message))
-        from a2at_engine.core.models import SendMessageResult
+        from workflow_engine.core.models import SendMessageResult
         return SendMessageResult(text=f"OK from {agent_name}", task_state="COMPLETED")
     def set_event_callback(self, cb):
         self._cb = cb

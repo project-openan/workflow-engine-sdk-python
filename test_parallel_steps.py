@@ -1,4 +1,4 @@
-"""Verify that ready steps at the same layer execute in parallel.
+﻿"""Verify that ready steps at the same layer execute in parallel.
 
 Mirrors the Java SDK's selfLoopStepCallsOnSelfTaskNotOnTask test:
 two layer-0 steps should dispatch concurrently (gap < 100ms),
@@ -7,11 +7,11 @@ not sequentially (gap >= 200ms).
 import asyncio
 import time
 import pytest
-from a2at_engine.core.executor import WorkflowExecutor
-from a2at_engine.core.models import (
+from workflow_engine.core.executor import WorkflowExecutor
+from workflow_engine.core.models import (
     Workflow, WorkflowStep, Task, StepType, JumpCondition, TaskResponse, RouteDecision,
 )
-from a2at_engine.control.control_points import ControlPoint
+from workflow_engine.control.control_points import ControlPoint
 
 
 class _ConcurrencyCP(ControlPoint):

@@ -129,19 +129,25 @@ class NegotiationTHandler(ExtensionHandler):
             receive_result = await _aio.to_thread(
                 a2at_client.receive_negotiation, message=result.text, context=context_map)
             if receive_result.get("needResponse", False):
-                result.metadata["negotiation_message"] = receive_result.get("message", "")
-                result.metadata["negotiation_context"] = receive_result
-                logger.info(f"[Negotiation-T] Agent '{getattr(agent_card, 'name', '?')}' requested negotiation: {result.metadata['negotiation_message']}")
+                metadata["negotiation_message"] = receive_result.get("message", "")
+                metadata["negotiation_context"] = receive_result
+                logger.info(f"[Negotiation-T] Agent '{getattr(agent_card, 'name', '?')}' requested negotiation: {metadata['negotiation_message']}")
         except Exception as e:
             msg = str(e) if e else ""
             if "Unsupported negotiation type" in msg:
                 logger.debug(f"[Negotiation-T] SDK receiveNegotiation unavailable for '{getattr(agent_card, 'name', '?')}' ({msg}), using fallback")
             else:
                 logger.warning(f"[Negotiation-T] receiveNegotiation failed for '{getattr(agent_card, 'name', '?')}': {msg}, using fallback")
-            fallback_text = self._extract_negotiation_text(metadata)
-            if fallback_text:
-                result.metadata["negotiation_message"] = fallback_text
-                logger.info(f"[Negotiation-T] Agent '{getattr(agent_card, 'name', '?')}' requested negotiation (fallback): {fallback_text}")
+        if "negotiation_message" not in metadata or not metadata["negotiation_message"]:
+            concern = metadata.get("negotiationConcern", "")
+            if concern:
+                metadata["negotiation_message"] = concern
+                logger.info(f"[Negotiation-T] Agent '{getattr(agent_card, 'name', '?')}' concern: {concern}")
+            else:
+                fallback_text = self._extract_negotiation_text(metadata)
+                if fallback_text:
+                    metadata["negotiation_message"] = fallback_text
+                    logger.info(f"[Negotiation-T] Agent '{getattr(agent_card, 'name', '?')}' negotiation (NEGOTIATION-T fallback): {fallback_text}")
         result.metadata = metadata
         return result
 

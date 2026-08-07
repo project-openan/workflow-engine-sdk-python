@@ -234,7 +234,7 @@ class WorkflowEngineClient:
             self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text, "metadata": result.metadata or {}})
             return result
         neg_meta = result.metadata or {}
-        neg_text = neg_meta.get("negotiation_message", "") or ""
+        neg_text = neg_meta.get("negotiation_message", "") or neg_meta.get("negotiationConcern", "") or ""
         logger.info(f"[Negotiation] Round {round_num} for '{agent_name}': {neg_text}")
         self._emit(EventType.NEGOTIATION_REQUEST, {
             "agent": agent_name, "round": round_num, "concern": neg_text,

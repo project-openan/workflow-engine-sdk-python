@@ -21,12 +21,10 @@ from typing import Dict, Any, List, Optional
 from loguru import logger
 
 try:
-    from a2a.client.auth import AuthInterceptor
     from a2a.client.interceptors import ClientCallInterceptor, BeforeArgs, AfterArgs
     _A2A_AUTH_AVAILABLE = True
 except ImportError:
     _A2A_AUTH_AVAILABLE = False
-    AuthInterceptor = None
     ClientCallInterceptor = None
     BeforeArgs = None
     AfterArgs = None
@@ -49,11 +47,13 @@ class AuthManager:
             return
         logger.info(f"[AuthManager] Initializing with {len(agent_cards)} agent card(s), config={credentials_config is not None}")
 
-        if credentials_config:
+        if credentials_config is not None:
             if isinstance(credentials_config, str):
                 self._auth_manager = AgentAuthManager(config_path=credentials_config)
             elif isinstance(credentials_config, dict):
                 self._auth_manager = AgentAuthManager(config=credentials_config)
+            else:
+                raise TypeError("credentials_config must be a file path or mapping")
         else:
             self._auth_manager = AgentAuthManager()
 
@@ -77,11 +77,7 @@ class AuthManager:
             if cred_svc is not None:
                 logger.info(f"[AuthManager] Agent {card.name}: credentials found")
                 agent_cfg = self._auth_manager.get_config(card.name) or {}
-                if any(isinstance(v, dict) and (v.get("auth_header") or v.get("accept_header"))
-                       for v in agent_cfg.values()):
-                    interceptors.append(CustomAuthInterceptor(cred_svc, agent_cfg))
-                else:
-                    interceptors.append(AuthInterceptor(cred_svc))
+                interceptors.append(CustomAuthInterceptor(cred_svc, agent_cfg))
                 logger.info(f"[AuthManager] Agent {card.name}: configured with {type(interceptors[0]).__name__}")
             if getattr(card, "capabilities", None) and card.capabilities.extensions:
                 ext_uris = [ext.uri for ext in card.capabilities.extensions if ext.uri]
@@ -92,6 +88,11 @@ class AuthManager:
 
     def get_interceptors(self, agent_name: str) -> List[Any]:
         return self._interceptors.get(agent_name, [])
+
+    def update_agent_cards(self, agent_cards: List[Any]) -> None:
+        """Rebuild card-derived interceptors while retaining credential state."""
+        self._interceptors.clear()
+        self._build_interceptors(agent_cards)
 
     def has_credentials(self, agent_name: str) -> bool:
         return bool(
@@ -116,16 +117,19 @@ class AuthProviderInterceptor(ClientCallInterceptor if _A2A_AUTH_AVAILABLE else 
     async def before(self, args: "BeforeArgs") -> None:
         agent_card = args.agent_card
         headers: Dict[str, str] = {}
-        try:
-            self._auth_provider.apply_auth(self._agent_name, agent_card, headers)
-        except Exception as e:
-            logger.warning(f"[AuthProvider] apply_auth raised: {e}")
+        self._auth_provider.apply_auth(self._agent_name, agent_card, headers)
         if args.context is None:
             from a2a.client.client import ClientCallContext
             args.context = ClientCallContext()
         if args.context.service_parameters is None:
             args.context.service_parameters = {}
-        args.context.service_parameters.update(headers)
+        for name, value in headers.items():
+            existing = args.context.service_parameters.get(name)
+            if existing is not None and existing != value:
+                raise RuntimeError(
+                    f"Authentication header conflict for agent {self._agent_name}: {name}"
+                )
+            args.context.service_parameters[name] = value
         if headers:
             logger.info(f"[AuthProvider] Injected {len(headers)} header(s) for {self._agent_name}")
 

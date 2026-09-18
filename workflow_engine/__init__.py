@@ -23,27 +23,26 @@ Quick start:
     from workflow_engine import (
         WorkflowExecutor, ControlPoint,
         A2ATransport, WorkflowEngineClient, ExtensionSender,
-        Workflow, TaskResponse, RouteDecision,
+        Workflow, MessageContent, TaskResult, RouteDecision,
     )
 
     # 1. User fetches AgentCards (from registry or custom source)
     # 2. User builds a shared transport, then the workflow facade on top
-    transport = A2ATransport(agent_cards=my_cards, a2at_env_path=".env")
+    transport = A2ATransport(agent_cards=my_cards)
     engine_client = WorkflowEngineClient(transport)
 
     # 3. User implements ControlPoint (workflow decisions)
     class MyCP(ControlPoint):
-        async def on_task(self, request, engine_client):
-            result = await engine_client.send_message(request.agent_name, request.message)
-            return TaskResponse(success=True, output=result.text)
-        async def on_route(self, step_name, results, conditions):
-            return RouteDecision(next_step="step_b")
+        async def on_task(self, request):
+            return MessageContent.text(request.instruction)
+        async def on_route(self, request):
+            return RouteDecision.allow()
 
-    # 4. Optional: one-shot pre-positioning (Authorization-T / Notification-T)
-    #    via ExtensionSender before workflow execution
-    # sender = ExtensionSender(transport)
-    # await sender.send_authorization("agent_a", "authorize", "policy text")
-    # await sender.send_notification("agent_a", "subscribe", "topic text")
+    # 4. Optional: independent Authorization-T / Notification-T operations.
+    #    Use a transport separate from workflow task traffic.
+    # sender = ExtensionSender(independent_transport)
+    # await sender.send_authorization("agent_a", authorization_content)
+    # subscription = sender.open_notification("agent_a", notification_content, listener)
 
     # 5. Execute
     executor = WorkflowExecutor(workflow=wf, control_point=MyCP(), engine_client=engine_client)
@@ -53,16 +52,20 @@ Quick start:
 from workflow_engine.core import (
     Workflow, WorkflowStep, Task, JumpCondition,
     StepType, TaskStatus, ExecutionResult,
-    SendMessageResult, TaskRequest, TaskResponse, RouteDecision,
+    BusinessFailure, BusinessInput, MessageContent, ReceivedArtifact,
+    ReceivedMessage, A2AStreamEvent, SendMessageResult, TaskRequest, TaskResult,
+    TaskExecutionResult, UpstreamStepResult, WorkflowInput, RouteRequest,
+    RouteDecision, NegotiationRequest, NegotiationReply, NegotiationSend,
+    NegotiationStop, NegotiationExchange,
     WorkflowSearchResult,
     ContextBuilder, WorkflowExecutor,
 )
 from workflow_engine.client import (
-    WorkflowEngineClient, A2ATransport, ExtensionSender, AuthManager,
-    ExtensionHandler, TaskTHandler, NegotiationTHandler, ExtensionRegistry,
-    A2ATExtension, AuthProvider,
+    WorkflowEngineClient, A2ATransport, ExtensionSender, NotificationSubscription,
+    NotificationHeartbeat, AuthManager,
+    A2ATExtension, A2atMessages, AuthProvider,
     create_ssl_context, normalize_agent_dict, StubWorkflowEngineClient,
-    log_request, log_response, log_response_event,
+    log_request, log_response,
 )
 from workflow_engine.control import ControlPoint, EventCallback, EventType
 from workflow_engine.control import (
@@ -75,13 +78,17 @@ __all__ = [
     # Core
     "Workflow", "WorkflowStep", "Task", "JumpCondition",
     "StepType", "TaskStatus", "ExecutionResult",
-    "SendMessageResult", "TaskRequest", "TaskResponse", "RouteDecision",
+    "BusinessFailure", "BusinessInput", "MessageContent", "ReceivedArtifact",
+    "ReceivedMessage", "A2AStreamEvent", "SendMessageResult", "TaskRequest", "TaskResult",
+    "TaskExecutionResult", "UpstreamStepResult", "WorkflowInput", "RouteRequest",
+    "RouteDecision", "NegotiationRequest", "NegotiationReply", "NegotiationSend",
+    "NegotiationStop", "NegotiationExchange",
     "WorkflowSearchResult",
     "ContextBuilder", "WorkflowExecutor",
     # Client
-    "WorkflowEngineClient", "A2ATransport", "ExtensionSender", "AuthManager",
-    "ExtensionHandler", "TaskTHandler", "NegotiationTHandler", "ExtensionRegistry",
-    "A2ATExtension", "AuthProvider", "log_request", "log_response", "log_response_event", "StubWorkflowEngineClient",
+    "WorkflowEngineClient", "A2ATransport", "ExtensionSender", "NotificationSubscription",
+    "NotificationHeartbeat", "AuthManager",
+    "A2ATExtension", "A2atMessages", "AuthProvider", "log_request", "log_response", "StubWorkflowEngineClient",
     "create_ssl_context", "normalize_agent_dict",
     # Control (user implements)
     "ControlPoint", "EventCallback", "EventType",

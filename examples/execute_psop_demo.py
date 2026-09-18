@@ -1,26 +1,43 @@
 ﻿"""Quick start using execute_psop (recommended high-level API).
 
-This is the simplest way to integrate the SDK: implement ControlPoint
-(only on_task and on_route required), call execute_psop, drain events.
+This is the simplest way to integrate the SDK: implement the ControlPoint
+callbacks used by the selected workflow, call execute_psop, and drain events.
 """
 
 import asyncio
+from pathlib import Path
+
+from a2a.types import Part
+from a2a_t.client import A2ATClient
+from a2a_t.core.standard_templates import PRIVATE_LINE_COMPLAINT_URI
+
 from workflow_engine import (
-    execute_psop, ControlPoint, RegistryClient, load_psop,
-    TaskResponse, RouteDecision, EventType,
+    A2atMessages,
+    ControlPoint,
+    EventType,
+    RegistryClient,
+    RouteDecision,
+    execute_psop,
+    load_psop,
 )
 
 
 class MyControlPoint(ControlPoint):
-    async def on_task(self, request, engine_client):
-        result = await engine_client.send_message(
-            request.agent_name, request.message
-        )
-        return TaskResponse(success=True, output=result.text)
+    def __init__(self, a2at_client):
+        self._a2at_client = a2at_client
 
-    async def on_route(self, step_name, results, conditions):
-        # Pick first branch (in production: use your own LLM or business logic)
-        return RouteDecision(next_step=conditions[0].step)
+    async def on_task(self, request):
+        if request.input.text is None:
+            raise ValueError("This example expects text task input")
+        generated = await asyncio.to_thread(
+            self._a2at_client.generate_task_prompt_from_text,
+            request.input.text,
+            PRIVATE_LINE_COMPLAINT_URI,
+        )
+        return A2atMessages.from_generated(generated, [Part(text=request.instruction)])
+
+    async def on_route(self, request):
+        return RouteDecision.allow("business condition matched")
 
 
 async def on_finish(result, events):
@@ -32,6 +49,8 @@ async def on_finish(result, events):
 
 
 async def main():
+    a2at_client = A2ATClient(env_path=Path("a2at.env"))
+
     # 1. Fetch AgentCards from the registry center
     registry = RegistryClient(url="https://127.0.0.1:5000")
     agent_cards = await registry.fetch_agent_cards()
@@ -48,10 +67,9 @@ async def main():
     async for event in execute_psop(
         psop=workflow,
         agent_cards=agent_cards,
-        control_point=MyControlPoint(),
-        a2at_env_path=".env",
+        control_point=MyControlPoint(a2at_client),
         credentials_config="agent_credentials.json",
-        runtime_intent="Diagnose SPN cross-city fault",
+        runtime_intent="Analyze the service issue and aggregate delegated results",
         ssl_verify=False,
         on_finish=on_finish,
     ):
@@ -61,7 +79,7 @@ async def main():
         elif etype == EventType.TASK_REQUEST:
             print(f"     Agent: {event['data']['agent']}")
         elif etype == EventType.TASK_RESPONSE:
-            print(f"     Response: {event['data'].get('response', '')[:60]}")
+            print(f"     Outputs: {event['data'].get('outputs', ())}")
         elif etype == "complete":
             print("Workflow complete!")
         elif etype == "error":

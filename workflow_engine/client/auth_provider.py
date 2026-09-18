@@ -21,11 +21,12 @@ Implement this when the agent's authentication is not covered by the
 credentials file or the AgentCard's security schemes (e.g. corporate SSO,
 non-standard auth). Mirrors the Java SDK's ``AuthProvider`` interface.
 
-Register via ``WorkflowEngineClient(..., auth_provider=my_provider)``.
+Register via ``A2ATransport(..., auth_provider=my_provider)`` or
+``execute_psop(..., auth_provider=my_provider)``.
 The provider is called for every message send, regardless of whether the
 AgentCard declares security schemes. If both a credentials config and a
-custom AuthProvider are configured, both run (custom provider first,
-credentials-based auth second).
+custom AuthProvider are configured, both are evaluated and different values
+for the same header are rejected.
 """
 
 from abc import ABC, abstractmethod

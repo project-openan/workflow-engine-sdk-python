@@ -28,7 +28,6 @@ Handles two input formats:
 """
 
 from typing import Any, Dict, List
-from loguru import logger
 
 
 def _normalize_security_schemes(sec_schemes: Any) -> Dict[str, Any]:
@@ -99,8 +98,4 @@ def normalize_agent_dict(agent_dict: Dict[str, Any]) -> Dict[str, Any]:
         result["securitySchemes"] = _normalize_security_schemes(result["securitySchemes"])
     if "securityRequirements" in result:
         result["securityRequirements"] = _normalize_security_requirements(result["securityRequirements"])
-    if result.get("securitySchemes") and not result.get("securityRequirements"):
-        scheme_names = list(result["securitySchemes"].keys())
-        result["securityRequirements"] = [{"schemes": {s: {} for s in scheme_names}}]
-        logger.info(f"Auto-populated securityRequirements from securitySchemes: {scheme_names}")
     return result

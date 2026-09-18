@@ -4,33 +4,19 @@ Verifies: import, step_type case parsing, execute_psop event flow,
 workflow_complete lifecycle, ControlPoint decision dispatch, on_finish hook.
 """
 import asyncio
+from importlib.metadata import version
+
+from packaging.version import Version
 from workflow_engine import (
-    execute_psop, ControlPoint, Workflow, TaskResponse, RouteDecision, EventType,
+    ControlPoint, MessageContent, RouteDecision, StubWorkflowEngineClient, Workflow, execute_psop,
 )
 
 
-class StubEngineClient:
-    """Minimal stub that records sends and returns canned text."""
-    def __init__(self):
-        self.sent = []
-    async def send_message(self, agent_name, message, context_id=None, metadata=None):
-        self.sent.append((agent_name, message))
-        from workflow_engine.core.models import SendMessageResult
-        return SendMessageResult(text=f"OK from {agent_name}", task_state="COMPLETED")
-    def set_event_callback(self, cb):
-        self._cb = cb
-    def set_control_point(self, cp):
-        self._cp = cp
-    async def close(self):
-        pass
-
-
 class MyCP(ControlPoint):
-    async def on_task(self, request, engine_client):
-        r = await engine_client.send_message(request.agent_name, request.message)
-        return TaskResponse(success=True, output=r.text)
-    async def on_route(self, step_name, results, conditions):
-        return RouteDecision(next_step=conditions[0].step, reason="pick first")
+    async def on_task(self, request):
+        return MessageContent.text(request.instruction)
+    async def on_route(self, request):
+        return RouteDecision.allow("condition matched")
 
 
 def build_workflow():
@@ -52,10 +38,13 @@ async def on_finish(result, events):
 
 
 async def main():
+    a2at_version = Version(version("a2a-t-sdk"))
+    assert Version("1.1.0") <= a2at_version < Version("2")
+    print(f"a2a-t-sdk: {a2at_version}")
     wf = build_workflow()
     print(f"step s1 type: {wf.steps[0].step_type}")
     print(f"step s2 type: {wf.steps[1].step_type} (input was 'allsuccess')")
-    stub = StubEngineClient()
+    stub = StubWorkflowEngineClient()
     events = []
     async for ev in execute_psop(
         psop=wf,
@@ -67,8 +56,6 @@ async def main():
     ):
         events.append(ev["type"])
     print("event sequence:", events)
-    expected_prefix = ["start", "step_start", "task_request", "task_response",
-                       "task_status_changed", "step_complete", "route_decision"]
     ok = events[0] == "start" and events[-1] == "close"
     ok = ok and "complete" in events
     ok = ok and "workflow_complete" in events

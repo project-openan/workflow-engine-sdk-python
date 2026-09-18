@@ -15,13 +15,15 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""Context assembly for the Workflow Execution SDK."""
+"""Select structured upstream results according to workflow dependencies."""
 
 from collections import deque
-from typing import Dict, Any, List, Optional
+from typing import Dict, List, Optional
 from loguru import logger
 
-from workflow_engine.core.models import Workflow, WorkflowStep
+from workflow_engine.core.models import (
+    TaskExecutionResult, UpstreamStepResult, Workflow, WorkflowInput, WorkflowStep,
+)
 
 
 class ContextBuilder:
@@ -41,61 +43,43 @@ class ContextBuilder:
         return predecessors
 
     def get_all_predecessors(self, step_name: str) -> List[str]:
-        ancestors = set()
+        ancestors = []
+        seen = set()
         queue = deque([step_name])
         while queue:
             current = queue.popleft()
             for s in self.workflow.steps:
                 if s.next:
                     for jc in s.next:
-                        if jc.step == current and s.name != current and s.name not in ancestors:
-                            ancestors.add(s.name)
+                        if jc.step == current and s.name != current and s.name not in seen:
+                            seen.add(s.name)
+                            ancestors.append(s.name)
                             queue.append(s.name)
                             break
-        return list(ancestors)
+        return ancestors
 
-    def build_context(self, step: WorkflowStep, step_outputs: Dict[str, Dict[str, Any]]) -> str:
-        if step.layer <= 0:
-            if self.runtime_intent:
-                logger.info(f"[Context] Step {step.name}: layer 0, using runtime intent only")
-                return f"## Runtime Context\n\n{self.runtime_intent}"
-            logger.info(f"[Context] Step {step.name}: layer 0, no context")
-            return ""
-        parts = []
-        if self.runtime_intent:
-            parts.append(f"## Runtime Context\n\n{self.runtime_intent}")
-        parts.append("## Previous Step Execution Results\n")
+    def build_workflow_input(
+        self,
+        step: WorkflowStep,
+        step_results: Dict[str, list[TaskExecutionResult]],
+    ) -> WorkflowInput:
         if step.context_from and "*" in step.context_from:
-            all_pred = self.get_all_predecessors(step.name)
-            ref_pairs = [(n, step_outputs[n]) for n in all_pred if n in step_outputs]
-            logger.info(f"[Context] Step {step.name}: using ALL predecessors ({len(ref_pairs)} available)")
+            selected = [name for name in self.get_all_predecessors(step.name) if name in step_results]
         elif step.context_from:
-            ref_pairs = [(n, step_outputs[n]) for n in step.context_from if n in step_outputs]
-            logger.info(f"[Context] Step {step.name}: using context_from={step.context_from} ({len(ref_pairs)} available)")
+            selected = [name for name in step.context_from if name in step_results]
+        elif step.context_from is None:
+            selected = [name for name in self.get_step_predecessors(step.name) if name in step_results]
         else:
-            pred_names = self.get_step_predecessors(step.name)
-            ref_pairs = [(n, step_outputs[n]) for n in pred_names if n in step_outputs]
-            logger.info(f"[Context] Step {step.name}: using direct predecessors={pred_names} ({len(ref_pairs)} available)")
-        for ref_step_name, ref_results in ref_pairs:
-            parts.append(f"### {ref_step_name} Results\n")
-            for task_desc, output in ref_results.items():
-                text = output if isinstance(output, str) else str(output)
-                parts.append(f"**Task**: {task_desc}\n**Output**: {text}\n\n")
-        result = "\n".join(parts).strip()
-        logger.info(f"[Context] Step {step.name}: built context ({len(result)} chars)")
-        if result:
-            logger.info(f"[Context] Content:\n{result[:2000]}")
-        return result
-
-    def build_task_message(self, task_description: str, context_message: str, lang: str = "zh") -> str:
-        lang_hint = ""
-        if lang == "en":
-            lang_hint = "\n\nPlease respond in English."
-        elif lang == "zh":
-            lang_hint = "\n\n请用中文回复。"
-        if context_message:
-            return f"{context_message}\n\n## Current Task\n{task_description}{lang_hint}"
-        return f"{task_description}{lang_hint}"
+            selected = []
+        upstream = tuple(
+            UpstreamStepResult(name, tuple(step_results[name])) for name in selected
+        )
+        result_count = sum(len(item.task_results) for item in upstream)
+        logger.info(
+            f"[Context] Step {step.name}: selected {len(upstream)} upstream step(s), "
+            f"{result_count} task result(s)"
+        )
+        return WorkflowInput(self.runtime_intent, upstream)
 
     def find_step_index(self, step_name: str) -> Optional[int]:
         return self._step_index.get(step_name)

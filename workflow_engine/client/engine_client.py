@@ -1,127 +1,95 @@
-﻿# Copyright (c) 2026 Huawei Technologies Co., Ltd.
+# Copyright (c) 2026 Huawei Technologies Co., Ltd.
 # All Rights Reserved.
 #
 # SPDX-License-Identifier: Apache-2.0
-#
-#    Licensed under the Apache License, Version 2.0 (the "License"); you may
-#    not use this file except in compliance with the License. You may obtain
-#    a copy of the License at
-#
-#         http://www.apache.org/licenses/LICENSE-2.0
-#
-#    Unless required by applicable law or agreed to in writing, software
-#    distributed under the License is distributed on an "AS IS" BASIS, WITHOUT
-#    WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. See the
-#    License for the specific language governing permissions and limitations
-#    under the License.
 
-"""WorkflowEngineClient -- workflow-execution facade over A2ATransport.
+"""Workflow task interaction facade over :class:`A2ATransport`."""
 
-Single responsibility: the workflow execution send path. Owns the
-Task-T/Negotiation-T extension handler chain, the Negotiation-T
-auto-loop, the global EventCallback, and the ControlPoint wiring.
-All wire-level work (httpx, auth, SSE consumer) delegates to
-:class:`A2ATransport`.
+from __future__ import annotations
 
-One-shot pre-positioning sends (Authorization-T / Notification-T) are
-a separate concern and live on :class:`ExtensionSender` -- callers
-that only need pre-positioning hold that lighter facade instead.
-"""
-
-import uuid
 import asyncio
 import time
-from typing import Dict, Any, List, Optional, Callable, Union, Awaitable
+import uuid
+from typing import Any, AsyncIterator, Dict, List, Optional
+
+from a2a_t.core import NegotiationContext, NegotiationPerformative
+import httpx
 from loguru import logger
 
-import httpx
-
-try:
-    from a2a.types import Task
-    _A2A_AVAILABLE = True
-except ImportError:
-    _A2A_AVAILABLE = False
-
 from workflow_engine.client.a2a_transport import A2ATransport
-from workflow_engine.client.auth_manager import AuthManager
-from workflow_engine.client.extension_handlers import ExtensionRegistry, ExtensionHandler
-from workflow_engine.client.protocol_logger import log_request, log_response
-from workflow_engine.control.control_points import (
-    EventCallback, EventType,
-)
-from workflow_engine.core.models import SendMessageResult
+from workflow_engine.client.a2at_messages import A2atMessages
 from workflow_engine.client.extensions import A2ATExtension
-
-# Type alias for the negotiation resolver callback. May be sync (returning
-# str/None) or async (returning an awaitable of str/None). The SDK awaits
-# coroutine results automatically, so an `async def` resolver is supported.
-NegotiationResolver = Union[
-    Callable[[str, str, Dict[str, Any]], Optional[str]],
-    Callable[[str, str, Dict[str, Any]], Awaitable[Optional[str]]],
-]
+from workflow_engine.control.control_points import EventCallback, EventType
+from workflow_engine.core.models import (
+    A2AStreamEvent, BusinessFailure, MessageContent, NegotiationExchange, NegotiationRequest,
+    NegotiationSend, NegotiationStop, ReceivedMessage, SendMessageResult, TaskRequest,
+)
 
 
 class WorkflowEngineClient:
-    """Workflow-execution send facade built on a shared :class:`A2ATransport`."""
+    """Own task/context correlation, remote waiting, and Negotiation-T exchanges."""
 
     def __init__(
         self,
         transport: A2ATransport,
-        custom_handlers: Optional[List[ExtensionHandler]] = None,
         event_callback: Optional[EventCallback] = None,
-        max_negotiation_rounds: int = 3,
+        max_negotiation_exchanges: int = 3,
+        close_transport_on_close: bool = False,
     ):
+        if max_negotiation_exchanges < 1:
+            raise ValueError("Negotiation exchange budget must be positive")
         self._transport = transport
-        self._extension_registry = ExtensionRegistry()
-        if custom_handlers:
-            for h in custom_handlers:
-                self._extension_registry.register(h)
+        self._event_callback = event_callback or EventCallback()
         self._control_point = None
-        self._event_callback = event_callback
-        self._max_negotiation_rounds = max_negotiation_rounds
-        logger.info(
-            f"[EngineClient] Initialized over transport "
-            f"({len(self._transport.agent_names)} agent(s)), "
-            f"max_neg={max_negotiation_rounds}"
-        )
+        self._max_negotiation_exchanges = max_negotiation_exchanges
+        self._close_transport_on_close = close_transport_on_close
+        self._closed = False
+        self._active_execution_id: Optional[str] = None
 
-    # ------------------------------------------------------------------
-    # Wiring
-    # ------------------------------------------------------------------
+    @classmethod
+    def owning(cls, transport: A2ATransport, **kwargs) -> "WorkflowEngineClient":
+        return cls(transport, close_transport_on_close=True, **kwargs)
 
-    def set_control_point(self, control_point):
+    @property
+    def callback_timeout_seconds(self) -> int:
+        return self._transport.send_timeout_seconds
+
+    def begin_execution(self, execution_id: str, control_point, event_callback) -> None:
+        """Bind this client to one active workflow execution."""
+        if self._closed:
+            raise RuntimeError("Workflow client closed")
+        if not execution_id:
+            raise ValueError("execution_id is required")
+        if self._active_execution_id is not None:
+            raise RuntimeError(
+                "WorkflowEngineClient is already bound to execution "
+                f"{self._active_execution_id}; concurrent reuse is not supported"
+            )
+        self._active_execution_id = execution_id
+        self._control_point = control_point
+        self._event_callback = event_callback or EventCallback()
+
+    def end_execution(self, execution_id: str) -> None:
+        if self._active_execution_id != execution_id:
+            return
+        self._active_execution_id = None
+        self._control_point = None
+        self._event_callback = EventCallback()
+
+    def set_control_point(self, control_point) -> None:
         self._control_point = control_point
 
-    def set_event_callback(self, callback):
-        """Attach an EventCallback so send_message emits agent_request/response."""
-        self._event_callback = callback
+    def set_event_callback(self, callback) -> None:
+        self._event_callback = callback or EventCallback()
 
-    def _emit(self, event_type: str, data: Dict[str, Any]):
-        if self._event_callback:
+    def _emit(self, event_type: str, data: Dict[str, Any]) -> None:
+        try:
             self._event_callback.on_event(event_type, data)
+        except Exception as exc:
+            logger.warning(f"Event callback failed for {event_type}: {exc}")
 
-    def _forward_intermediate_event(self, event_type: str, data: Dict[str, Any]):
-        """Forward intermediate SSE events with structured logging (mirrors Java forwardIntermediateEvent)."""
-        agent = data.get("agent", "?")
-        if event_type == EventType.AGENT_STATUS_UPDATE:
-            state = data.get("state", "")
-            is_final = data.get("is_final", False)
-            logger.info(f"[EngineClient] Agent {agent} status update: {state} (final={is_final})")
-        elif event_type == EventType.AGENT_ARTIFACT_UPDATE:
-            art_name = data.get("artifact_name", "")
-            art_id = data.get("artifact_id", "")
-            logger.info(f"[EngineClient] Agent {agent} artifact update: {art_name} ({art_id})")
-        elif event_type == EventType.AGENT_MESSAGE_EVENT:
-            text = data.get("text", "")
-            logger.info(f"[EngineClient] Agent {agent} message event: {len(text)} chars")
+    def _forward_intermediate_event(self, event_type: str, data: Dict[str, Any]) -> None:
         self._emit(event_type, data)
-
-    def register_handler(self, handler: ExtensionHandler):
-        self._extension_registry.register(handler)
-
-    # ------------------------------------------------------------------
-    # Delegated transport accessors (for convenience)
-    # ------------------------------------------------------------------
 
     @property
     def agent_names(self) -> List[str]:
@@ -131,244 +99,361 @@ class WorkflowEngineClient:
     def httpx_client(self) -> httpx.AsyncClient:
         return self._transport.httpx_client
 
-    def get_a2at_client(self):
-        return self._transport.get_a2at_client()
-
     def get_card(self, agent_name: str):
         return self._transport.get_card(agent_name)
 
-    def update_agent_cards(self, agent_cards: List[Any]):
+    def update_agent_cards(self, agent_cards: List[Any]) -> None:
         self._transport.update_agent_cards(agent_cards)
 
-    async def close(self):
-        await self._transport.close()
+    async def send_message(self, agent_name: str, content: MessageContent) -> SendMessageResult:
+        request = TaskRequest(
+            execution_id=str(uuid.uuid4()), task_id=str(uuid.uuid4()),
+            input=self._default_input(), agent_name=agent_name, skill="",
+            instruction="", step_name="",
+        )
+        return await self.dispatch(request, content, self._control_point)
+
+    async def stream_message(
+        self,
+        agent_name: str,
+        content: MessageContent,
+        context_id: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> AsyncIterator[A2AStreamEvent]:
+        """Stream normalized A2A events without exposing transport internals."""
+        if self._closed:
+            raise RuntimeError("Workflow client closed")
+        card = self._transport.get_card(agent_name)
+        if card is None:
+            raise RuntimeError(f"Agent not found: {agent_name}")
+        self._transport.validate_content_extensions(card, content)
+        client = self._transport.create_a2a_client(card)
+        request = self._transport.build_send_request(
+            content, context_id or str(uuid.uuid4()), task_id,
+        )
+        async for response in client.send_message(request):
+            self._transport.log_response_event(agent_name, response)
+            yield self._transport.parse_stream_event(response)
+
+    @staticmethod
+    def _default_input():
+        from workflow_engine.core.models import BusinessInput
+
+        return BusinessInput.from_text("external message")
+
+    async def dispatch(
+        self,
+        request: TaskRequest,
+        content: MessageContent,
+        callbacks=None,
+    ) -> SendMessageResult:
+        interaction = {
+            "negotiation_started": False,
+            "remote_task_id": None,
+            "terminal": False,
+        }
+        try:
+            return await self._dispatch(request, content, callbacks, interaction)
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._cancel_abandoned_interaction(request.agent_name, interaction)
+            )
+            raise
+        except Exception as exc:
+            await self._cancel_abandoned_interaction(request.agent_name, interaction)
+            if interaction["negotiation_started"]:
+                self._emit(EventType.NEGOTIATION_FAILED, {
+                    "agent": request.agent_name,
+                    "error": str(exc),
+                    "error_type": type(exc).__name__,
+                })
+            raise
+
+    async def _dispatch(
+        self,
+        request: TaskRequest,
+        content: MessageContent,
+        callbacks,
+        interaction: dict[str, Any],
+    ) -> SendMessageResult:
+        if self._closed:
+            raise RuntimeError("Workflow client closed")
+        card = self._transport.get_card(request.agent_name)
+        if card is None:
+            raise RuntimeError(f"Agent not found: {request.agent_name}")
+        context_id = str(uuid.uuid4())
+        deadline = time.monotonic() + self.callback_timeout_seconds
+        remote_task_id: Optional[str] = None
+        histories: dict[str, list[NegotiationExchange]] = {}
+        contexts: dict[str, NegotiationContext] = {}
+        answered: set[tuple[str, str, int]] = set()
+        current_content = content
+        abort_sent = False
+
+        for exchange_number in range(self._max_negotiation_exchanges + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Task interaction timed out")
+            result = await asyncio.wait_for(
+                self._send_once(card, request, current_content, context_id, remote_task_id),
+                timeout=remaining,
+            )
+            if result.task is not None and result.task.id:
+                interaction["remote_task_id"] = result.task.id
+            remote_task_id = self._validate_remote_identity(result, context_id, remote_task_id)
+            interaction["remote_task_id"] = remote_task_id
+            if abort_sent:
+                interaction["terminal"] = result.is_terminal
+                if not result.is_terminal:
+                    await self._cancel_abandoned_interaction(
+                        request.agent_name, interaction,
+                    )
+                result.failure_code = "negotiation.aborted"
+                result.failure_message = "Business sent Abort; task was not completed successfully"
+                self._emit(EventType.AGENT_RESPONSE, {
+                    "agent": request.agent_name,
+                    "response": result.text,
+                    "received_messages": result.received_messages,
+                })
+                return result
+            while result.task_state in {"TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"}:
+                if remote_task_id is None:
+                    raise ValueError("Non-terminal response has no remote task identity")
+                await asyncio.sleep(0.25)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Task interaction timed out")
+                result = await asyncio.wait_for(
+                    self._transport.get_task(request.agent_name, remote_task_id),
+                    timeout=remaining,
+                )
+                self._validate_remote_identity(result, context_id, remote_task_id)
+
+            if result.task_state != "TASK_STATE_INPUT_REQUIRED":
+                return await self._finish_remote_result(
+                    request.agent_name, result, interaction,
+                )
+            interaction["negotiation_started"] = True
+            if exchange_number >= self._max_negotiation_exchanges:
+                raise RuntimeError("Negotiation exchange budget exhausted; no Abort generated")
+            if callbacks is None:
+                raise RuntimeError("on_negotiation handler is required")
+            if remote_task_id is None:
+                raise ValueError("INPUT_REQUIRED has no remote task identity")
+
+            received = self._negotiation_response(result)
+            context = self._negotiation_context(received)
+            previous_context = contexts.get(context.id)
+            self._validate_context_progression(previous_context, context)
+            contexts[context.id] = context
+            key = (remote_task_id, context.id, context.round)
+            while key in answered:
+                await asyncio.sleep(0.25)
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise TimeoutError("Task interaction timed out")
+                result = await asyncio.wait_for(
+                    self._transport.get_task(request.agent_name, remote_task_id),
+                    timeout=remaining,
+                )
+                self._validate_remote_identity(result, context_id, remote_task_id)
+                if result.task_state in {"TASK_STATE_SUBMITTED", "TASK_STATE_WORKING"}:
+                    continue
+                if result.task_state != "TASK_STATE_INPUT_REQUIRED":
+                    return await self._finish_remote_result(
+                        request.agent_name, result, interaction,
+                    )
+                received = self._negotiation_response(result)
+                context = self._negotiation_context(received)
+                previous_context = contexts.get(context.id)
+                self._validate_context_progression(previous_context, context)
+                contexts[context.id] = context
+                key = (remote_task_id, context.id, context.round)
+            answered.add(key)
+            exchanges = histories.setdefault(context.id, [])
+            request_model = NegotiationRequest(
+                task=request,
+                original_submission=content,
+                received=received,
+                previous_exchanges=tuple(exchanges),
+                remaining_wait_seconds=max(0.0, deadline - time.monotonic()),
+            )
+            self._emit(EventType.NEGOTIATION_REQUEST, {
+                "agent": request.agent_name, "request": request_model,
+                "exchange": exchange_number + 1,
+            })
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise TimeoutError("Task interaction timed out")
+            reply = await asyncio.wait_for(
+                callbacks.on_negotiation(request_model), timeout=remaining
+            )
+            if isinstance(reply, NegotiationStop):
+                raise BusinessFailure(reply.code, reply.reason)
+            if not isinstance(reply, NegotiationSend):
+                raise TypeError("on_negotiation must return NegotiationSend or NegotiationStop")
+            self._validate_negotiation_reply(context, reply.content)
+            exchanges.append(NegotiationExchange(received, reply))
+            self._emit(EventType.NEGOTIATION_RESOLVED, {
+                "agent": request.agent_name, "exchange": exchange_number + 1,
+                "reply": reply,
+            })
+            current_content = reply.content
+            abort_sent = (
+                A2atMessages.context_from_metadata(current_content.metadata).performative
+                is NegotiationPerformative.ABORT
+            )
+
+        raise RuntimeError("Negotiation exchange budget exhausted; no Abort generated")
+
+    async def _finish_remote_result(
+        self,
+        agent_name: str,
+        result: SendMessageResult,
+        interaction: dict[str, Any],
+    ) -> SendMessageResult:
+        interaction["terminal"] = result.is_terminal
+        if result.task is not None and not result.is_terminal:
+            await self._cancel_abandoned_interaction(agent_name, interaction)
+            if result.failure_code is None:
+                result.failure_code = "a2a.unsupported_task_state"
+                result.failure_message = (
+                    "Workflow execution cannot continue remote task state "
+                    f"{result.task_state or 'unknown'}"
+                )
+        self._emit(EventType.AGENT_RESPONSE, {
+            "agent": agent_name,
+            "response": result.text,
+            "received_messages": result.received_messages,
+        })
+        return result
+
+    async def _cancel_abandoned_interaction(
+        self, agent_name: str, interaction: dict[str, Any],
+    ) -> None:
+        task_id = interaction.get("remote_task_id")
+        if not task_id or interaction.get("terminal"):
+            return
+        try:
+            result = await asyncio.wait_for(
+                self._transport.cancel_task(agent_name, task_id),
+                timeout=min(5.0, float(self.callback_timeout_seconds)),
+            )
+            interaction["terminal"] = result.is_terminal
+            message = (
+                f"Remote task cleanup result: agent={agent_name}, "
+                f"task_id={task_id}, state={result.task_state or 'unknown'}"
+            )
+            if result.task_state == "TASK_STATE_CANCELED":
+                logger.info(message)
+            else:
+                logger.warning(message)
+        except asyncio.CancelledError:
+            logger.warning(
+                f"Remote task cleanup was cancelled: agent={agent_name}, task_id={task_id}"
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Failed to cancel abandoned remote task: agent={agent_name}, "
+                f"task_id={task_id}, error={type(exc).__name__}: {exc}"
+            )
+
+    async def _send_once(
+        self, card, request: TaskRequest, content: MessageContent,
+        context_id: str, remote_task_id: Optional[str],
+    ) -> SendMessageResult:
+        self._emit(EventType.AGENT_REQUEST, {"agent": request.agent_name, "content": content})
+        self._transport.validate_content_extensions(card, content)
+        client = self._transport.create_a2a_client(card)
+        send_request = self._transport.build_send_request(content, context_id, remote_task_id)
+        return await self._transport.consume_stream(
+            client, send_request, self._forward_intermediate_event, request.agent_name,
+        )
+
+    @staticmethod
+    def _validate_remote_identity(
+        result: SendMessageResult,
+        context_id: str,
+        remote_task_id: Optional[str],
+    ) -> Optional[str]:
+        task = result.task
+        if task is None:
+            return remote_task_id
+        if not task.id or task.context_id != context_id:
+            raise ValueError("Remote task/context identity changed")
+        if remote_task_id is not None and task.id != remote_task_id:
+            raise ValueError("Remote task/context identity changed")
+        return task.id
+
+    @staticmethod
+    def _metadata_views(received: ReceivedMessage):
+        if received.message is not None:
+            yield received.message.metadata
+        yield received.task_metadata
+        for artifact in received.artifacts:
+            yield artifact.metadata
+
+    @classmethod
+    def _negotiation_response(cls, result: SendMessageResult) -> ReceivedMessage:
+        uri = A2ATExtension.NEGOTIATION_T.uri
+        for received in result.received_messages:
+            if any(uri in metadata for metadata in cls._metadata_views(received)):
+                return received
+        raise ValueError("Unsupported INPUT_REQUIRED interaction: no Negotiation-T proposal")
+
+    @classmethod
+    def _negotiation_context(cls, received: ReceivedMessage) -> NegotiationContext:
+        context = A2atMessages.negotiation_context(received)
+        if context.performative is not NegotiationPerformative.PROPOSE or context.is_exhausted():
+            raise ValueError("Expected a valid Negotiation-T Propose")
+        return context
+
+    @staticmethod
+    def _validate_context_progression(
+        previous: Optional[NegotiationContext], current: NegotiationContext,
+    ) -> None:
+        if previous is None:
+            return
+        if current.round < previous.round or current.max_rounds != previous.max_rounds:
+            raise ValueError("Negotiation round regressed or maxRounds changed")
+
+    @classmethod
+    def _validate_negotiation_reply(
+        cls, original: NegotiationContext, content: MessageContent,
+    ) -> None:
+        uri = A2ATExtension.NEGOTIATION_T.uri
+        if uri not in content.extensions or uri not in content.metadata:
+            raise ValueError("Negotiation reply must carry and activate Negotiation-T")
+        ending = A2atMessages.context_from_metadata(content.metadata)
+        if (
+            ending.id != original.id
+            or ending.round != original.round
+            or ending.max_rounds != original.max_rounds
+            or ending.performative is NegotiationPerformative.PROPOSE
+        ):
+            raise ValueError("Reply does not match the received negotiation context/round")
+
+    async def get_task(self, agent_name: str, task_id: str) -> SendMessageResult:
+        return await self._transport.get_task(agent_name, task_id)
+
+    async def list_tasks(self, agent_name: str, request=None):
+        return await self._transport.list_tasks(agent_name, request)
+
+    async def cancel_task(self, agent_name: str, task_id: str) -> SendMessageResult:
+        return await self._transport.cancel_task(agent_name, task_id)
+
+    async def subscribe_to_task(self, agent_name: str, task_id: str, event_callback=None):
+        return await self._transport.subscribe_to_task(agent_name, task_id, event_callback)
+
+    async def close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        if self._close_transport_on_close:
+            await self._transport.close()
 
     async def __aenter__(self):
         return self
 
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.close()
-
-    # ------------------------------------------------------------------
-    # Workflow send path
-    # ------------------------------------------------------------------
-
-    async def send_message(
-        self,
-        agent_name: str,
-        message: str,
-        context_id: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None,
-        skip_extensions: bool = False,
-    ) -> SendMessageResult:
-        t_total = time.time()
-        agent_card = self._transport.get_card(agent_name)
-        if not agent_card:
-            logger.error(f"[EngineClient] Agent not found: {agent_name}")
-            raise RuntimeError(f"Agent not found: {agent_name}")
-        logger.info(f"[EngineClient] send_message to {agent_name}: {len(message)} chars")
-        if skip_extensions:
-            logger.info(f"[EngineClient] Skipping A2A-T extensions for {agent_name} (self-loop)")
-        else:
-            t_ext = time.time()
-            metadata = await self._run_before_send_handlers(agent_card, message, metadata)
-            logger.info(f"[Timing] Extensions before_send for {agent_name}: {time.time()-t_ext:.2f}s")
-        logger.info(f"[EngineClient] Emitting agent_request for {agent_name}")
-        self._emit(EventType.AGENT_REQUEST, {"agent": agent_name, "request": message, "metadata": metadata or {}})
-        client = self._transport.create_a2a_client(agent_card)
-        send_req = self._transport.build_send_request(message, context_id, metadata)
-        # Log full protocol request (endpoint + headers + body) after build, before send.
-        endpoint = "?"
-        if hasattr(agent_card, "supported_interfaces") and agent_card.supported_interfaces:
-            endpoint = agent_card.supported_interfaces[0].url or "?"
-        from google.protobuf.json_format import MessageToJson
-        try:
-            body_json = MessageToJson(send_req, ensure_ascii=False, indent=2)
-        except Exception:
-            body_json = str(send_req)
-        # Build HTTP header view: only real headers belong here, not message metadata.
-        # A2A-Extensions is derived from which extension URIs appear as metadata keys.
-        # Authorization is held by the credential service / auth interceptor at send time.
-        ext_uris = [k for k in (metadata or {}) if "tmforum.org" in k]
-        header_view = {}
-        if ext_uris:
-            header_view["A2A-Extensions"] = ",".join(ext_uris)
-        if agent_card.security_schemes and agent_card.security_requirements:
-            header_view["Authorization"] = "Bearer <injected-by-interceptor-at-send-time>"
-        log_request(agent_name, endpoint, body_json, header_view)
-
-        t_stream = time.time()
-        response_text, last_task, last_meta, task_state = (
-            await self._transport.consume_stream(client, send_req, self._forward_intermediate_event, agent_name)
-        )
-        logger.info(f"[Timing] A2A stream for {agent_name}: {time.time()-t_stream:.2f}s")
-
-        if response_text is None and last_task is not None:
-            response_text = str(last_task)
-
-        logger.info(f"[EngineClient] Response from {agent_name}: text={len(response_text or '')} chars, state={task_state}")
-        result = SendMessageResult(
-            text=response_text or "",
-            task=last_task,
-            metadata=last_meta,
-            task_state=task_state,
-        )
-        if skip_extensions:
-            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text, "metadata": result.metadata or {}})
-            logger.info(f"[Timing] send_message to {agent_name} total: {time.time()-t_total:.2f}s")
-            return result
-        result = await self._run_after_receive_handlers(agent_card, result)
-        result = await self._auto_negotiate(agent_card, agent_name, message, context_id, result, 1)
-        logger.info(f"[Timing] send_message to {agent_name} total: {time.time()-t_total:.2f}s")
-        return result
-
-    # ------------------------------------------------------------------
-    # Auto-negotiation (integrated into send_message)
-    # ------------------------------------------------------------------
-
-    async def _auto_negotiate(
-        self, agent_card, agent_name, original_message,
-        context_id, result, round_num,
-    ) -> SendMessageResult:
-        if not self._is_negotiation_needed(result) or round_num > self._max_negotiation_rounds:
-            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text, "metadata": result.metadata or {}})
-            return result
-        neg_meta = result.metadata or {}
-        neg_text = neg_meta.get("negotiation_message", "") or neg_meta.get("negotiationConcern", "") or ""
-        logger.info(f"[Negotiation] Round {round_num} for '{agent_name}': {neg_text}")
-        self._emit(EventType.NEGOTIATION_REQUEST, {
-            "agent": agent_name, "round": round_num, "concern": neg_text,
-        })
-        if self._control_point is not None:
-            try:
-                clarification = self._control_point.on_negotiation(agent_name, neg_text, neg_meta)
-                if asyncio.iscoroutine(clarification):
-                    clarification = await clarification
-            except Exception as e:
-                logger.opt(exception=True).warning(f"[Negotiation] on_negotiation raised: {e}")
-                clarification = None
-        else:
-            clarification = "Please proceed with the original task using available information."
-        if not clarification:
-            self._emit(EventType.NEGOTIATION_FAILED, {
-                "agent": agent_name, "round": round_num, "reason": "no clarification",
-            })
-            self._emit(EventType.AGENT_RESPONSE, {"agent": agent_name, "response": result.text, "metadata": result.metadata or {}})
-            return result
-        logger.info(f"[Negotiation] Clarification for '{agent_name}' round {round_num}: {clarification}")
-        self._emit(EventType.NEGOTIATION_RESOLVED, {
-            "agent": agent_name, "round": round_num, "clarification": clarification,
-        })
-        follow_up = (
-            "[NEGOTIATION_RESOLUTION]\n"
-            "The engine has reviewed your negotiation request and provides "
-            "the following clarification:\n\n" + clarification + "\n\n"
-            "---\nOriginal Task:\n" + original_message + "\n\n"
-            "Please re-execute the task based on the clarification above."
-        )
-        follow_up_meta = await self._build_negotiation_follow_up_meta(
-            agent_name, neg_meta, clarification)
-        follow_up_meta = await self._run_before_send_handlers(agent_card, follow_up, follow_up_meta)
-        client = self._transport.create_a2a_client(agent_card)
-        send_req = self._transport.build_send_request(follow_up, context_id, follow_up_meta)
-        t_neg_stream = time.time()
-        logger.info(f"[Timing] Negotiation round {round_num} A2A stream to {agent_name}: starting")
-        response_text, last_task, last_meta, task_state = (
-            await self._transport.consume_stream(client, send_req, self._forward_intermediate_event, agent_name)
-        )
-        logger.info(f"[Timing] Negotiation round {round_num} A2A stream to {agent_name}: {time.time()-t_neg_stream:.2f}s")
-        if response_text is None and last_task is not None:
-            response_text = str(last_task)
-        r = SendMessageResult(
-            text=response_text or "", task=last_task,
-            metadata=last_meta, task_state=task_state,
-        )
-        r = await self._run_after_receive_handlers(agent_card, r)
-        return await self._auto_negotiate(agent_card, agent_name, original_message, context_id, r, round_num + 1)
-
-    async def _build_negotiation_follow_up_meta(
-        self, agent_name, neg_meta, clarification,
-    ):
-        """Build follow-up metadata, preferring SDK continue_negotiation.
-
-        Calls a2a-t-sdk continue_negotiation to generate a structured
-        Negotiation-T payload (with DATA-NEGOTIATION-T context). Falls
-        back to manual metadata construction when the SDK is unavailable
-        or the negotiation context is missing.
-        """
-        a2at_client = self._transport.get_a2at_client()
-        if a2at_client:
-            try:
-                receive_result = neg_meta.get("negotiation_context")
-                if isinstance(receive_result, dict):
-                    context_dict = receive_result.get("context")
-                    if isinstance(context_dict, dict):
-                        from a2a_t.negotiation.common.models import (
-                            ContinueNegotiationInput, NegotiationContext,
-                        )
-                        from a2a_t.negotiation.common.enums import NegotiationStatus
-                        context = NegotiationContext.from_context(context_dict)
-                        input_obj = ContinueNegotiationInput(
-                            context=context,
-                            status=NegotiationStatus.AGREED,
-                            content_text=clarification,
-                        )
-                        payload = await asyncio.to_thread(a2at_client.continue_negotiation, input_obj)
-                        logger.info(
-                            f"[Negotiation] SDK continue_negotiation payload "
-                            f"for '{agent_name}': round {context.round} -> AGREED"
-                        )
-                        return dict(payload)
-            except Exception as e:
-                logger.opt(exception=True).warning(
-                    f"[Negotiation] continue_negotiation failed for "
-                    f"'{agent_name}': {e}; using fallback"
-                )
-        return {
-            A2ATExtension.NEGOTIATION_T.uri:
-                "## Data Return Confirmation\n" + clarification + "\n",
-        }
-    # ------------------------------------------------------------------
-    # Extension handler chain
-    # ------------------------------------------------------------------
-
-    async def _run_before_send_handlers(
-        self, agent_card, message: str,
-        preset_metadata: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        metadata: Dict[str, Any] = dict(preset_metadata) if preset_metadata else {}
-        ext_uris = self._transport._get_extensions(agent_card)
-        handlers = self._extension_registry.get_handlers_for_extensions(ext_uris)
-        agent_name = getattr(agent_card, "name", "?")
-        for handler in handlers:
-            t_h = time.time()
-            metadata = await handler.before_send(
-                agent_card, message, metadata,
-                self._transport.get_a2at_client(), self._control_point,
-            )
-            logger.info(
-                f"[Timing] Handler {type(handler).__name__}.before_send "
-                f"for {agent_name}: {time.time()-t_h:.2f}s"
-            )
-        return metadata
-
-    async def _run_after_receive_handlers(
-        self, agent_card, result: SendMessageResult,
-    ) -> SendMessageResult:
-        ext_uris = self._transport._get_extensions(agent_card)
-        handlers = self._extension_registry.get_handlers_for_extensions(ext_uris)
-        for handler in handlers:
-            result = await handler.after_receive(
-                agent_card, result,
-                self._transport.get_a2at_client(), self._control_point,
-                self._event_callback,
-            )
-        return result
-
-    # ------------------------------------------------------------------
-    # Negotiation helpers
-    # ------------------------------------------------------------------
-
-    @staticmethod
-    def _is_negotiation_needed(result: SendMessageResult) -> bool:
-        return bool(result.task_state and "INPUT_REQUIRED" in result.task_state)

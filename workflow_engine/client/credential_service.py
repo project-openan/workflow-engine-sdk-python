@@ -22,6 +22,7 @@ Reads credentials from a user-provided config (JSON file or dict).
 """
 
 import json
+import copy
 import time
 from pathlib import Path
 from typing import Dict, Optional
@@ -99,7 +100,7 @@ class AgentCredentialService(CredentialService if _A2A_AVAILABLE else object):
     async def _login(self, scheme_cfg: dict) -> Optional[str]:
         login_url = scheme_cfg.get("login_url")
         if not login_url:
-            return None
+            raise ValueError(f"Authentication login_url is required for {self._agent_name}")
         method = scheme_cfg.get("method", "POST").upper()
         content_type = scheme_cfg.get("content_type", "application/json")
         token_field = scheme_cfg.get("token_field", "accessSession")
@@ -111,7 +112,9 @@ class AgentCredentialService(CredentialService if _A2A_AVAILABLE else object):
             username = scheme_cfg.get("username")
             password = decrypt_if_needed(scheme_cfg.get("password"))
             if not username or not password:
-                return None
+                raise ValueError(
+                    f"Authentication username and password are required for {self._agent_name}"
+                )
             body = {scheme_cfg.get("username_field","username"): username, scheme_cfg.get("password_field","password"): password}
         client = self._httpx_client or httpx.AsyncClient(
             timeout=httpx.Timeout(connect=30, read=30, write=30, pool=5.0),
@@ -135,13 +138,24 @@ class AgentCredentialService(CredentialService if _A2A_AVAILABLE else object):
             token = self._extract_nested_value(data, token_field) if isinstance(data, dict) else None
             if not token and isinstance(data, dict):
                 token = data.get("accessSession") or data.get("access_session") or data.get("access_token") or data.get("token")
+            if not isinstance(token, str) or not token.strip():
+                raise ValueError(
+                    f"Authentication response has no nonblank token for {self._agent_name}"
+                )
             return token
-        except Exception as e:
+        except Exception as exc:
+            status = (
+                exc.response.status_code
+                if isinstance(exc, httpx.HTTPStatusError) else None
+            )
             logger.error(
                 f"[Auth] Login failed: agent={self._agent_name}, "
-                f"url={_safe_url(login_url)}, error={e}"
+                f"url={_safe_url(login_url)}, error_type={type(exc).__name__}, "
+                f"status={status}"
             )
-            return None
+            raise RuntimeError(
+                f"Authentication login failed for agent {self._agent_name}"
+            ) from exc
         finally:
             if own_client:
                 await client.aclose()
@@ -167,21 +181,79 @@ class AgentAuthManager:
         self._config: Dict[str, dict] = {}
         self._services: Dict[str, AgentCredentialService] = {}
         self._httpx_client: Optional[httpx.AsyncClient] = None
-        if config:
-            self._config = config
+        if config is not None:
+            self._config = self._resolve_config(copy.deepcopy(config))
         elif config_path:
             self._load_from_file(config_path)
+        self._validate_encrypted_credentials(self._config)
 
     def _load_from_file(self, path: str):
         p = Path(path)
-        if not p.exists():
-            return
+        if not p.is_file():
+            raise FileNotFoundError(f"Credentials file not found: {path}")
         try:
             with open(p, "r", encoding="utf-8") as f:
-                self._config = json.load(f)
+                loaded = json.load(f)
+            if not isinstance(loaded, dict):
+                raise ValueError("Credentials root must be an object")
+            self._config = self._resolve_config(loaded)
             logger.info(f"[Auth] Loaded credentials for {len(self._config)} agent(s): {list(self._config.keys())}")
-        except Exception as e:
-            logger.warning(f"[Auth] Failed to load credentials: {e}")
+        except (OSError, ValueError, TypeError) as exc:
+            raise ValueError(f"Failed to load credentials from {path}: {exc}") from exc
+
+    @classmethod
+    def _resolve_config(cls, root: Dict[str, dict]) -> Dict[str, dict]:
+        if "profiles" not in root and "agents" not in root:
+            return root
+        profiles = root.get("profiles")
+        agents = root.get("agents")
+        if not isinstance(profiles, dict) or not isinstance(agents, dict):
+            raise ValueError("Credential profile form requires object fields: profiles and agents")
+        resolved = {}
+        for agent_name, binding in agents.items():
+            if not isinstance(binding, dict):
+                raise ValueError(f"Credential binding for {agent_name} must be an object")
+            profile_name = binding.get("profile")
+            if not isinstance(profile_name, str) or not profile_name.strip():
+                raise ValueError(f"Credential profile for {agent_name} must not be blank")
+            profile = profiles.get(profile_name)
+            if not isinstance(profile, dict):
+                raise ValueError(
+                    f"Unknown credential profile '{profile_name}' for agent {agent_name}"
+                )
+            agent_config = copy.deepcopy(profile)
+            overrides = binding.get("overrides", {})
+            if not isinstance(overrides, dict):
+                raise ValueError(f"Credential overrides for {agent_name} must be an object")
+            for scheme_name, values in overrides.items():
+                if not isinstance(values, dict):
+                    raise ValueError(
+                        f"Credential override {agent_name}.{scheme_name} must be an object"
+                    )
+                target = agent_config.setdefault(scheme_name, {})
+                if not isinstance(target, dict):
+                    raise ValueError(
+                        f"Credential scheme {profile_name}.{scheme_name} must be an object"
+                    )
+                cls._merge_mapping(target, values)
+            resolved[str(agent_name)] = agent_config
+        return resolved
+
+    @classmethod
+    def _merge_mapping(cls, target: dict, overrides: dict) -> None:
+        for key, value in overrides.items():
+            if isinstance(target.get(key), dict) and isinstance(value, dict):
+                cls._merge_mapping(target[key], value)
+            else:
+                target[key] = copy.deepcopy(value)
+
+    @classmethod
+    def _validate_encrypted_credentials(cls, value) -> None:
+        if isinstance(value, dict):
+            for nested in value.values():
+                cls._validate_encrypted_credentials(nested)
+        elif isinstance(value, str) and value.startswith("enc:"):
+            decrypt_if_needed(value)
 
     def get_service(self, agent_name: str) -> Optional[AgentCredentialService]:
         if agent_name in self._services:
@@ -206,7 +278,7 @@ class AgentAuthManager:
 
 
 class CustomAuthInterceptor(ClientCallInterceptor if _A2A_AVAILABLE else object):
-    """Auth interceptor supporting custom header names."""
+    """Auth interceptor supporting A2A requirement groups and custom headers."""
 
     def __init__(self, credential_service: AgentCredentialService, scheme_configs: Dict[str, dict]):
         self._credential_service = credential_service
@@ -216,33 +288,73 @@ class CustomAuthInterceptor(ClientCallInterceptor if _A2A_AVAILABLE else object)
         agent_card = args.agent_card
         if not agent_card.security_requirements or not agent_card.security_schemes:
             return
+        failures = []
         for requirement in agent_card.security_requirements:
+            candidate = {}
+            failure = None
             for scheme_name in requirement.schemes:
                 scheme_cfg = self._scheme_configs.get(scheme_name, {})
-                credential = await self._credential_service.get_credentials(scheme_name, args.context)
+                if scheme_name not in agent_card.security_schemes:
+                    failure = f"scheme {scheme_name} is not declared by the AgentCard"
+                    break
+                if not scheme_cfg:
+                    failure = f"no configuration for scheme {scheme_name}"
+                    break
+                credential = await self._credential_service.get_credentials(
+                    scheme_name, args.context
+                )
                 if not credential:
-                    continue
-                if args.context is None:
-                    from a2a.client.client import ClientCallContext
-                    args.context = ClientCallContext()
-                if args.context.service_parameters is None:
-                    args.context.service_parameters = {}
+                    failure = f"no credential for scheme {scheme_name}"
+                    break
                 auth_header = scheme_cfg.get("auth_header")
                 if auth_header:
                     prefix = scheme_cfg.get("auth_header_prefix", "")
-                    args.context.service_parameters[auth_header] = f"{prefix}{credential}"
-                    logger.info(f"[CustomAuth] Set header {auth_header} for scheme {scheme_name}")
+                    name, value = auth_header, f"{prefix}{credential}"
                 else:
-                    args.context.service_parameters["Authorization"] = f"Bearer {credential}"
-                    logger.info(f"[CustomAuth] Set Bearer header for scheme {scheme_name}")
+                    scheme = agent_card.security_schemes[scheme_name]
+                    if (
+                        scheme.HasField("api_key_security_scheme")
+                        and scheme.api_key_security_scheme.location.lower() == "header"
+                    ):
+                        name = scheme.api_key_security_scheme.name
+                        value = credential
+                    else:
+                        name, value = "Authorization", f"Bearer {credential}"
+                if name in candidate and candidate[name] != value:
+                    failure = f"conflicting values for header {name}"
+                    break
+                candidate[name] = value
                 accept_header = scheme_cfg.get("accept_header")
                 if accept_header:
-                    args.context.service_parameters["Accept"] = accept_header
-                    logger.info(
-                        f"[CustomAuth] Override Accept header to {accept_header} "
-                        f"for agent {getattr(args.agent_card, 'name', '?')}"
+                    if "Accept" in candidate and candidate["Accept"] != accept_header:
+                        failure = "conflicting values for header Accept"
+                        break
+                    candidate["Accept"] = accept_header
+            if failure is not None:
+                failures.append(failure)
+                continue
+            if args.context is None:
+                from a2a.client.client import ClientCallContext
+                args.context = ClientCallContext()
+            if args.context.service_parameters is None:
+                args.context.service_parameters = {}
+            for name, value in candidate.items():
+                existing = args.context.service_parameters.get(name)
+                if existing is not None and existing != value:
+                    raise RuntimeError(
+                        f"Authentication header conflict for agent "
+                        f"{getattr(agent_card, 'name', '?')}: {name}"
                     )
-                return
+                args.context.service_parameters[name] = value
+            logger.info(
+                f"[CustomAuth] Applied {len(candidate)} authentication header(s) "
+                f"for agent {getattr(agent_card, 'name', '?')}"
+            )
+            return
+        raise RuntimeError(
+            f"Authentication requirements are not satisfied for agent "
+            f"{getattr(agent_card, 'name', '?')}: {'; '.join(failures)}"
+        )
 
     async def after(self, args: AfterArgs) -> None:
         pass

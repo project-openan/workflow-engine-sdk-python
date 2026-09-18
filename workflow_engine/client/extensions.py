@@ -18,19 +18,27 @@
 """A2A-T extension type constants.
 
 Each constant encapsulates the full extension URI so callers never need to
-hardcode URI strings. Use these with ``WorkflowEngineClient.send_extension_message``.
+hardcode URI strings. Activate them through ``MessageContent.extensions``;
+Authorization-T and Notification-T are sent through ``ExtensionSender``.
 """
 
 from enum import Enum
+
+from a2a_t.core.metadata import (
+    AUTHORIZATION_T_EXTENSION_URI,
+    NEGOTIATION_T_EXTENSION_URI,
+    NOTIFICATION_T_EXTENSION_URI,
+    TASK_T_EXTENSION_URI,
+)
 
 
 class A2ATExtension(Enum):
     """A2A-T extension types supported by the workflow execution engine."""
 
-    TASK_T = "https://projects.tmforum.org/a2aproject/telecommunication/extensions/Task-T/v1"
-    NEGOTIATION_T = "https://projects.tmforum.org/a2aproject/telecommunication/extensions/NEGOTIATION-T"
-    AUTHORIZATION_T = "https://projects.tmforum.org/a2aproject/telecommunication/extensions/Authorization-T/v1"
-    NOTIFICATION_T = "https://projects.tmforum.org/a2aproject/telecommunication/extensions/Notification-T/v1"
+    TASK_T = TASK_T_EXTENSION_URI
+    NEGOTIATION_T = NEGOTIATION_T_EXTENSION_URI
+    AUTHORIZATION_T = AUTHORIZATION_T_EXTENSION_URI
+    NOTIFICATION_T = NOTIFICATION_T_EXTENSION_URI
 
     @property
     def uri(self) -> str:

@@ -25,43 +25,47 @@ This example shows the basic flow:
 """
 
 import asyncio
+from pathlib import Path
+
+from a2a.types import Part
+from a2a_t.client import A2ATClient
+from a2a_t.core.standard_templates import PRIVATE_LINE_COMPLAINT_URI
+
 from workflow_engine import (
-    WorkflowExecutor,
-    ControlPoint,
-    WorkflowEngineClient,
+    A2atMessages,
     A2ATransport,
+    ControlPoint,
     RegistryClient,
-    Workflow,
-    TaskResponse,
     RouteDecision,
+    WorkflowEngineClient,
+    WorkflowExecutor,
 )
 
 
 class MyControlPoint(ControlPoint):
     """User-implemented decision layer."""
 
-    async def on_task(self, request, engine_client):
-        # User decides whether/how to send the task
-        result = await engine_client.send_message(
-            request.agent_name,
-            request.message,
+    def __init__(self, a2at_client):
+        self._a2at_client = a2at_client
+
+    async def on_task(self, request):
+        if request.input.text is None:
+            raise ValueError("This example expects text task input")
+        generated = await asyncio.to_thread(
+            self._a2at_client.generate_task_prompt_from_text,
+            request.input.text,
+            PRIVATE_LINE_COMPLAINT_URI,
         )
-        return TaskResponse(success=True, output=result.text)
+        return A2atMessages.from_generated(generated, [Part(text=request.instruction)])
 
-    async def on_route(self, step_name, results, conditions):
-        # User decides which branch to take
-        # In production, use your own LLM or business logic here
-        return RouteDecision(next_step=conditions[0].step)
-
-    async def on_authorization(self, agent_name, auth_request):
-        # User approves or denies authorization requests
-        return True
-
-    async def on_notification(self, agent_name, notification):
-        print(f"Notification from {agent_name}: {notification}")
+    async def on_route(self, request):
+        # Called once for each conditional edge. Multiple edges may be allowed.
+        return RouteDecision.allow("business condition matched")
 
 
 async def main():
+    a2at_client = A2ATClient(env_path=Path("a2at.env"))
+
     # 1. Fetch AgentCards from the registry center
     registry = RegistryClient(url="https://127.0.0.1:5000")
     agent_cards = await registry.fetch_agent_cards()
@@ -69,7 +73,6 @@ async def main():
     # 2. Build a shared transport, then the workflow facade on top
     transport = A2ATransport(
         agent_cards=agent_cards,
-        a2at_env_path=".env",
         credentials_config="agent_credentials.json",
     )
     engine_client = WorkflowEngineClient(transport)
@@ -85,21 +88,21 @@ async def main():
     # 4. Execute the workflow
     executor = WorkflowExecutor(
         workflow=workflow,
-        control_point=MyControlPoint(),
+        control_point=MyControlPoint(a2at_client),
         engine_client=engine_client,
-        runtime_intent="Diagnose SPN cross-city fault",
+        runtime_intent="Analyze the service issue and aggregate delegated results",
     )
 
     result = await executor.run()
 
     if result.success:
-        print(f"Workflow completed successfully.")
+        print("Workflow completed successfully.")
     else:
         print(f"Workflow failed: {result.error}")
 
     print(f"Execution history: {len(result.history)} steps")
 
-    await engine_client.close()
+    await transport.close()
 
 
 if __name__ == "__main__":

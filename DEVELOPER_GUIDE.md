@@ -1,516 +1,349 @@
-﻿# Developer Guide: workflow-engine SDK
+# Developer Guide
 
-Integration guide for the workflow-engine Python SDK: installation, the layered
-entry points, ControlPoint implementation, event handling, agent
-authentication, and the A2A-T extension model. For the architecture
-rationale, see [DESIGN.md](DESIGN.md).
+## 1. Required versions
 
----
-
-## 1. Installation
+- Python 3.12 or newer
+- `a2a-sdk>=1.1.2,<2`
+- `a2a-t-sdk>=1.0.9,<2` (the engine uses its core metadata contract; host callbacks use its content APIs)
 
 ```bash
-pip install workflow-engine
+python -m pip install -e ".[dev]"
+python -m pytest -q
 ```
 
-Dependencies (auto-installed): `a2a-sdk`, `a2a-t-sdk`, `httpx`, `loguru`,
-`protobuf`, `packaging`.
+Construct the host's `A2ATClient` with an existing `.env` path. Text-generation and semantic-validation calls need a configured LLM; deterministic negotiation `from_data` generation does not make an LLM call.
 
-Verify:
+## 2. Workflow model
 
 ```python
-import workflow_engine
-print(workflow_engine.__version__)  # 0.0.3
+workflow = Workflow.from_dict({
+    "name": "parallel-diagnosis",
+    "steps": [
+        {
+            "name": "dispatch",
+            "layer": 0,
+            "step_type": "AllSuccess",
+            "subtasks": [
+                {"agent": "domain-a", "skill": "diagnose", "description": "diagnose A"},
+                {"agent": "domain-b", "skill": "diagnose", "description": "diagnose B"},
+            ],
+            "next": [{"step": "aggregate", "condition": ""}],
+        },
+        {
+            "name": "aggregate",
+            "layer": 1,
+            "step_type": "SelfLoop",
+            "context_from": ["dispatch"],
+            "subtasks": [{"agent": "host", "description": "aggregate results"}],
+        },
+    ],
+})
 ```
 
----
-
-## 2. Core Concepts
-
-The SDK has three layers. Pick the one that matches your use case:
-
-| Layer | Entry Point | What It Handles | What You Provide |
-|-------|------------|-----------------|-----------------|
-| **2 (high)** | `execute_psop()` | Event stream, lifecycle, cancellation, event collection | ControlPoint + AgentCards + config |
-| **1 (mid)** | `WorkflowExecutor` | DAG traversal, context assembly, ControlPoint dispatch | ControlPoint + WorkflowEngineClient + Workflow |
-| **0 (low)** | `A2ATransport` + facades | A2A send, auth, extensions, SSE normalization | AgentCards + config |
-
-**Most integrations use Layer 2 (`execute_psop`).** It handles the lifecycle
-(start/complete/error/close), cancellation (client disconnect), event
-serialization, and an `on_finish` persistence hook.
-
-Layer 0 is a shared `A2ATransport` with two facades on top:
-`WorkflowEngineClient` (workflow send) and `ExtensionSender` (one-shot
-pre-positioning). See DESIGN.md for the rationale.
-
----
-
-## 3. Quick Integration (Layer 2: `execute_psop`)
-
-### 3.1 Minimal Example
+`Task.input` may contain natural-language text or JSON-compatible structured data:
 
 ```python
-import asyncio
-from workflow_engine import (
-    execute_psop, ControlPoint, RouteDecision,
-    TaskResponse, RegistryClient, load_psop,
-)
+Task(agent="domain-a", input=BusinessInput.from_text("diagnose circuit"))
+Task(agent="domain-b", input=BusinessInput.from_data({"circuit_id": "C-1"}))
+```
 
+When omitted, the task description becomes the text input.
 
-class MyControlPoint(ControlPoint):
-    async def on_task(self, request, engine_client):
-        # SDK assembles the full message (context + task + lang hint)
-        # in request.message. Just send it.
-        result = await engine_client.send_message(
-            request.agent_name, request.message
+## 3. Implement callbacks
+
+### `on_task(request) -> MessageContent`
+
+The callback receives business data only. Common fields:
+
+| Field | Meaning |
+|---|---|
+| `execution_id` | local workflow execution identity |
+| `task_id` | stable local logical subtask identity |
+| `input` | current task text or structured data |
+| `agent_name`, `skill` | target business capability |
+| `instruction` | current task description only |
+| `step_name`, `language` | workflow provenance |
+| `workflow_input` | selected upstream history window |
+
+The callback may call the A2A-T SDK and an LLM, then return final A2A parts, metadata, and activated extension URIs:
+
+```python
+from a2a_t.client import A2ATClient
+from a2a_t.core.standard_templates import PRIVATE_LINE_COMPLAINT_URI
+
+a2at_client = A2ATClient(env_path=a2at_env_path)
+
+class Callbacks(ControlPoint):
+    async def on_task(self, request):
+        generated = await asyncio.to_thread(
+            a2at_client.generate_task_prompt_from_text,
+            request.input.text,
+            PRIVATE_LINE_COMPLAINT_URI,
         )
-        return TaskResponse(success=bool(result.text), output=result.text)
+        return A2atMessages.from_generated(
+            generated,
+            [Part(text=request.instruction)],
+        )
+```
 
-    async def on_route(self, step_name, results, conditions):
-        return RouteDecision(next_step=conditions[0].step)
+Do not call `WorkflowEngineClient.send_message()` inside this callback. The executor sends the returned content and preserves protocol identity across waiting and negotiation.
 
+### `on_self_task(request) -> TaskResult`
 
-async def main():
-    registry = RegistryClient(url="https://127.0.0.1:5000", ssl_verify=False)
-    agent_cards = await registry.fetch_agent_cards()
+Return zero or more outputs. Outputs may be text or structured JSON values and may contain nested arrays.
 
-    workflow = await load_psop(
-        base_url="https://127.0.0.1:5001",
-        psop_id="your-psop-id",
-        ssl_verify=False,
+```python
+async def on_self_task(self, request):
+    summaries = [summarize(step) for step in request.workflow_input.upstream_results]
+    return TaskResult.succeeded(summaries)
+```
+
+Use `TaskResult.failed(code, message)` or raise `BusinessFailure` for a safe business failure.
+
+### `on_route(request) -> RouteDecision`
+
+The engine calls once per nonblank edge. `request.current_results` contains results produced by the source step, while `request.workflow_input` contains the selected upstream window.
+
+```python
+async def on_route(self, request):
+    if evaluate(request.condition, request.current_results):
+        return RouteDecision.allow("condition matched")
+    return RouteDecision.deny("condition did not match")
+```
+
+Unconditional edges never invoke this callback. Multiple conditional edges may be allowed.
+
+### `on_negotiation(request) -> NegotiationReply`
+
+Use the host's A2A-T SDK to process `request.received` and generate a final reply for the same negotiation. `request.previous_exchanges` is ordered history; `remaining_wait_seconds` is the remaining engine budget.
+
+```python
+async def on_negotiation(self, request):
+    from a2a_t.core.standard_templates import (
+        INFORMATION_NEGOTIATION_ACCEPT_REJECT_URI,
+        INFORMATION_NEGOTIATION_PROPOSE_URI,
+    )
+    from a2a_t.negotiation.content import (
+        InformationEndingContent,
+        NegotiationConclusion,
+        NegotiationEndingData,
+        NegotiationItem,
     )
 
-    # execute_psop builds A2ATransport + WorkflowEngineClient internally
-    async for event in execute_psop(
-        psop=workflow,
-        agent_cards=agent_cards,
-        control_point=MyControlPoint(),
-        a2at_env_path=".env",
-        credentials_config="agent_credentials.json",
-        runtime_intent="Diagnose SPN cross-city fault",
-        ssl_verify=False,
-    ):
-        print(f"[{event['type']}] {event['data']}")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
+    context = A2atMessages.negotiation_context(request.received)
+    metadata = request.received.message.metadata
+    remote_prompt = metadata[A2ATExtension.NEGOTIATION_T.uri]
+    validated = a2at_client.validate_propose_prompt_and_data_filling(
+        remote_prompt,
+        context,
+        {
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "minItems": 1,
+                    "description": "Business fields requested by the delegated agent",
+                },
+                "relationship": {
+                    "type": "string",
+                    "nullable": True,
+                    "description": "Logical relationship between requested fields",
+                },
+            },
+            "required": ["items"],
+        },
+        INFORMATION_NEGOTIATION_PROPOSE_URI,
+    )
+    supplied = [
+        NegotiationItem(name, resolve_business_value(name, request, validated.data))
+        for name in validated.data["items"]
+    ]
+    generated = a2at_client.generate_negotiation_accept_prompt_from_data(
+        NegotiationEndingData(
+            context,
+            InformationEndingContent(NegotiationConclusion.ACCEPT, supplied),
+        ),
+        INFORMATION_NEGOTIATION_ACCEPT_REJECT_URI,
+    )
+    content = A2atMessages.from_generated(
+        generated,
+        [Part(text="business-supplied clarification")],
+    )
+    return NegotiationReply.send(content)
 ```
 
-### 3.2 What `execute_psop` Does For You
+The host validates and interprets the proposal before deciding. Generate Reject or Abort with the corresponding current content API. Accept, Reject, and Abort reuse the received `id`, `round`, and `maxRounds`; the SDK stamps only the terminal `performative`. Do not call the deprecated `start_negotiation`, `receive_negotiation`, or `continue_negotiation` methods, and do not send the legacy `negotiationId/status/extra` shape.
 
-| Responsibility | Handled by |
-|---------------|-----------|
-| Build A2ATransport, then WorkflowEngineClient over it | `execute_psop` |
-| Attach ControlPoint + event emitter | `execute_psop` |
-| Create WorkflowExecutor with shared emitter | `execute_psop` |
-| Run workflow as asyncio task | `execute_psop` |
-| Emit `start` / `complete` / `error` / `close` lifecycle events | `execute_psop` |
-| Cancel workflow on client disconnect (GeneratorExit) | `execute_psop` |
-| Serialize events to JSON-safe dicts | `execute_psop` |
-| Call `on_finish(result, collected_events)` after workflow ends | `execute_psop` |
-| Call `on_event(event)` transformer per event | `execute_psop` |
-| Close transport httpx pool | `execute_psop` |
-
-### 3.3 Event Types
-
-Events come from three origins. The runner emits the lifecycle bracket
-(`start` ... `complete`/`error` ... `close`); the executor emits step/task
-and routing events; the engine client emits agent traffic and the A2A-T
-extension handlers emit negotiation/authorization/notification.
-
-| Event Type | Origin | When | Data Keys |
-|-----------|-------|------|-----------|
-| `start` | runner | Workflow begins | `workflow`, `steps` |
-| `step_start` | executor | A step begins | `step` |
-| `task_request` | executor | A subtask is dispatched to `on_task` | `step`, `agent`, `task` |
-| `task_response` | executor | `on_task` returned a `TaskResponse` | `step`, `agent`, `task`, `output` |
-| `task_status_changed` | executor | Task status updated | `step`, `subtask_index`, `agent`, `status` |
-| `route_decision` | executor | Branch decision made | `step`, `next`, `reason` |
-| `step_complete` | executor | Step finished | `step`, `results` |
-| `agent_request` | engine client | Message sent to agent | `agent`, `request`, `metadata` |
-| `agent_response` | engine client | Response received | `agent`, `response` |
-| `agent_status_update` | engine client | Streaming status update | `agent`, `state`, `text` |
-| `agent_artifact_update` | engine client | Streaming artifact update | `agent`, `artifact_name`, `text` |
-| `agent_message_event` | engine client | Streaming message event | `agent`, `text` |
-| `negotiation_request` | engine client | Agent needs clarification | `agent`, `round`, `concern` |
-| `negotiation_resolved` | engine client | Clarification provided | `agent`, `round`, `clarification` |
-| `negotiation_failed` | engine client | Negotiation failed | `agent`, `round`, `reason` |
-| `authorization_request` | extension | Agent requests authorization | `agent`, `auth_request` |
-| `authorization_resolved` | extension | Authorization decision | `agent`, `decision` |
-| `notification` | extension | Agent pushes notification | `agent`, `notification` |
-| `workflow_complete` | executor | DAG traversal ended (precedes `complete`/`error`) | (empty) |
-| `complete` | runner | Workflow succeeded | `history`, `step_outputs` |
-| `error` | runner or executor | Workflow failed | runner: `error`, `history`, `step_outputs`; executor: `step`, `results` |
-| `close` | runner | Cleanup done | (empty) |
-
-Compare with constants: `event["type"] == EventType.STEP_START`. Every type
-in the table has a matching constant in `EventType`.
-
-> **`workflow_complete` vs `complete`, and duplicate `error`:** the
-> executor emits `workflow_complete` as soon as DAG traversal ends, then
-> the runner emits `complete` (success) or `error` (failure) with the
-> final `ExecutionResult`. On a step failure the executor emits an
-> `error` carrying `step`/`results`, and the runner later emits a
-> second `error` carrying `history`/`step_outputs` -- check `data` keys
-> to tell them apart.
-
-### 3.4 Persistence Hook (`on_finish`)
+To stop locally without claiming that a protocol Abort was sent:
 
 ```python
-async def on_finish(result, events):
-    """Called after the workflow ends (success or failure)."""
-    if result.success:
-        save_to_database(result.history, result.step_outputs)
-    else:
-        log_error(result.error)
-
-
-async for event in execute_psop(..., on_finish=on_finish):
-    yield event  # SSE stream to client
+return NegotiationReply.stop("negotiation.rejected", "Host rejected the proposal")
 ```
 
-### 3.5 Event Transformer (`on_event`)
+If the remote task already exists, a local stop, timeout, cancellation, or invalid negotiation response triggers a bounded best-effort A2A task cancellation. This cleanup does not manufacture an A2A-T Reject or Abort and never replaces the original workflow failure.
 
-Inject business-specific events or filter SDK events:
+## 4. Execute
+
+Low-level execution keeps transport ownership explicit:
 
 ```python
-def shape_event(event):
-    if event["type"] == "task_status_changed":
-        d = event["data"]
-        update_my_model(d["step"], d["subtask_index"], d["status"])
-        return [
-            {"type": "psop_update", "data": {"model": my_model_dump()}},
-            event,
-        ]
-    return event
-
-
-async for event in execute_psop(..., on_event=shape_event):
-    ...
+transport = A2ATransport(
+    agent_cards,
+    credentials_config="agent_credentials.json",
+    ssl_verify=True,
+    ca_certs_path="ca.pem",
+    preferred_protocol="HTTP+JSON",
+    send_timeout_seconds=600,
+)
+client = WorkflowEngineClient(transport, max_negotiation_exchanges=3)
+result = await WorkflowExecutor(
+    workflow, Callbacks(), client,
+    runtime_intent="diagnose service",
+    lang="en",
+).run()
+await transport.close()
 ```
 
-Return values: `event` (pass through), `None` (skip), `list` (inject multiple).
-
-### 3.6 Cancellation
-
-Closing the async iterator (client disconnect, timeout) automatically
-cancels the running workflow. `execute_psop` catches `GeneratorExit`,
-cancels the internal asyncio task, and still calls `on_finish` with a
-"cancelled" result.
+The high-level runner yields events and owns only resources that it creates:
 
 ```python
-async for event in execute_psop(...):
-    yield event  # StreamingResponse -> client disconnect -> GeneratorExit
+async for event in execute_psop(
+    workflow,
+    agent_cards,
+    Callbacks(),
+    credentials_config="agent_credentials.json",
+    on_finish=persist,
+):
+    publish(event)
 ```
 
----
+If `engine_client` is supplied, the caller must close its transport.
 
-## 4. ControlPoint: Flow Decisions
+One `WorkflowEngineClient` may be bound to only one active `WorkflowExecutor` at a time. Create separate clients for concurrent workflow executions; transports may be shared only through an adapter that explicitly supports that ownership model.
 
-`ControlPoint` drives the workflow forward. You must implement `on_task`
-and `on_route`; the rest have defaults. Authorization-T and Notification-T
-are pre-positioning operations handled via `ExtensionSender` before the
-workflow starts, not in-workflow callbacks.
+## 5. Event contract
 
-### 4.1 Methods
+Runner lifecycle: `start`, `complete`, `error`, `close`.
 
-| Method | Required | Called When | You Decide |
-|--------|----------|-------------|-----------|
-| `on_task(request, engine_client)` | **Yes** | A step sends a task to an agent | whether/how to send, what to return |
-| `on_self_task(request)` | No (default echoes) | A SELF_LOOP step | local result (no A2A-T message) |
-| `on_route(step_name, results, conditions)` | **Yes** | A step has conditional branches | which branch to take |
-| `on_negotiation(agent_name, text, result)` | No (default generic) | Agent returns INPUT_REQUIRED | clarification text |
+Executor: `step_start`, `step_complete`, `task_request`, `task_response`, `task_status_changed`, `route_decision`, `workflow_complete`.
 
-### 4.2 TaskRequest Fields
+Remote interaction: `agent_request`, `agent_response`, `agent_status_update`, `agent_artifact_update`, `agent_message_event`, `negotiation_request`, `negotiation_resolved`, `negotiation_failed`.
 
-| Field | Description |
-|-------|-------------|
-| `agent_name` | Target agent name (matches AgentCard.name) |
-| `skill` | Skill declared on the task |
-| `message` | Full assembled message (upstream context + task + language hint) |
-| `description` | Original task description (for logging/history) |
-| `context` | Upstream context only (without the current task) |
-| `step_name` | Current step name |
-| `subtask_index` | Index within the step's subtasks |
+Every executor event contains `execution_id`. A `route_decision` event contains source `step`, target `next`, original `condition`, `conditional`, `allowed`, and `reason`.
 
-### 4.3 Route Decision
+## 6. Authorization-T and Notification-T
 
-`conditions` is a `List[JumpCondition]`, each with `.step` (target) and
-`.condition` (description). Return `RouteDecision(next_step=...)`.
+Generate and validate content in host code. `A2atMessages.from_generated` keeps the SDK metadata and activates the generated extension, so the target AgentCard must declare that same URI.
 
 ```python
-async def on_route(self, step_name, results, conditions):
-    prompt = build_route_prompt(step_name, results, conditions)
-    decision = await my_llm.generate(prompt)
-    return RouteDecision(next_step=decision, reason="LLM decided")
+from a2a_t.core.standard_templates import (
+    AUTHORIZATION_POLICY_MANAGEMENT_URI,
+    SUBSCRIBE_INCIDENT_URI,
+)
+
+auth_transport = A2ATransport(agent_cards, auth_provider=provider)
+sender = ExtensionSender(auth_transport)
+
+generated_auth = a2at_client.generate_auth_prompt_from_text(
+    authorization_text,
+    AUTHORIZATION_POLICY_MANAGEMENT_URI,
+)
+auth_content = A2atMessages.from_generated(generated_auth, [Part(text="authorize policy")])
+auth_result = await sender.send_authorization("domain-a", auth_content)
+if not auth_result.is_success:
+    record_independent_failure(auth_result.failure_code, auth_result.failure_message)
 ```
 
-If `next_step` is not in the allowed list, the SDK logs a warning and ends
-the workflow. Empty conditions mean unconditional fan-out (no `on_route`
-call); only conditional branches reach this method.
-
-### 4.4 Negotiation
-
-When an agent returns `INPUT_REQUIRED` and supports Negotiation-T, the
-engine's `send_message` auto-loop calls `on_negotiation` for a clarification
-and resends the follow-up. You only supply the text; do not send messages
-here. Return `None`/`""` to fail the round (the loop stops after
-`max_negotiation_rounds`).
+Notification uses a long-lived handle:
 
 ```python
-async def on_negotiation(self, agent_name, negotiation_text, receive_result):
-    prompt = f"Agent {agent_name} needs: {negotiation_text}"
-    return await my_llm.generate(prompt)
+def on_notification(subscription, received):
+    process(received)
+    if is_expected_final_result(received):
+        subscription.close()
+
+generated_notification = a2at_client.generate_notification_prompt_from_text(
+    subscription_text,
+    SUBSCRIBE_INCIDENT_URI,
+)
+notification_content = A2atMessages.from_generated(
+    generated_notification,
+    [Part(text="subscribe to business event")],
+)
+subscription = sender.open_notification("domain-a", notification_content, on_notification)
+ack = await subscription.acknowledgement
+if ack.is_failure:
+    subscription.close()
+    record_independent_failure(ack.failure_code, ack.failure_message)
+await subscription.completion
 ```
 
-For reusable strategies, implement `NegotiationStrategy` and inject it into
-`DefaultControlPoint`.
+Use a transport instance separate from workflow task traffic. Host orchestration may log an independent-operation failure, but it must not make workflow execution depend on that result unless explicit business policy says so.
 
----
+## 7. Existing task operations
 
-## 5. Pre-positioning: Authorization-T and Notification-T
-
-Authorization-T and Notification-T are one-shot operations sent via
-`ExtensionSender` **before** the workflow starts. They are not part of the
-in-workflow handler chain (`ExtensionRegistry` only auto-registers Task-T
-and Negotiation-T).
-
-| Operation | Method | Callback mechanism |
-|-----------|--------|-------------------|
-| Authorization-T | `sender.send_authorization(agent, instruction, input)` | Returns `SendMessageResult` directly |
-| Notification-T | `sender.send_notification(agent, instruction, input)` | Returns `SendMessageResult` (subscription confirmed). Subsequent SSE events are handled by the workbench agent's business code, not the SDK |
-
-### Parameters
-
-| Parameter | Type | Description |
-|-----------|------|-------------|
-| `agent_name` | `str` | Target agent name (must match `AgentCard.name`) |
-| `instruction` | `str` | Short instruction text; becomes `parts[].text` in the A2A message body |
-| `natural_language_input` | `str` | Natural language input passed to the A2A-T SDK to generate a structured extension prompt. The generated value is placed in the message `metadata` under the extension URI key (e.g. `https://.../Authorization-T/v1`). Falls back to this text as-is when SDK generation is unavailable |
-
-### Wire format
-
-The resulting A2A message sent to the agent:
-
-```
-parts[].text  = instruction
-metadata      = { "<extension-URI>": "<SDK-generated structured prompt>" }
+```python
+task = await client.get_task(agent, task_id)
+tasks = await client.list_tasks(agent, ListTasksRequest(page_size=20))
+cancelled = await client.cancel_task(agent, task_id)
+latest = await client.subscribe_to_task(agent, task_id, on_task_event)
 ```
 
-Example for Authorization-T:
+Demo or test cleanup may list and cancel unfinished tasks before a run. This is application behavior; the executor does not cancel unrelated remote tasks automatically.
+
+## 8. Authentication
+
+Credential configuration is keyed by AgentCard name and security-scheme name. A login response token defaults to the `accessSession` body field and may use a configured nested `token_field`. Passwords may use the engine's encrypted `enc:` form.
+
+Repeated credentials may be defined once under `profiles` and bound under `agents`; an agent may supply nested `overrides`. Unknown profiles, malformed configuration, missing explicitly configured files, and encrypted values without a valid key fail during transport construction.
 
 ```json
 {
-  "parts": [{"text": "Authorize diagnosis operations"}],
-  "metadata": {
-    "https://projects.tmforum.org/a2aproject/telecommunication/extensions/Authorization-T/v1": "<structured authorization policy>"
+  "profiles": {
+    "shared-login": {
+      "bearer": {
+        "login_url": "https://identity.example/login",
+        "request_fields": {"username": "user", "password": "enc:<iv>:<ciphertext>"},
+        "token_field": "accessSession"
+      }
+    }
+  },
+  "agents": {
+    "domain-a": {"profile": "shared-login"},
+    "domain-b": {
+      "profile": "shared-login",
+      "overrides": {"bearer": {"request_fields": {"username": "domain-b-user"}}}
+    }
   }
 }
 ```
 
-### Return value
-
-Both methods return `SendMessageResult` containing the agent's response:
-
-| Field | Description |
-|-------|-------------|
-| `text` | Response text from the agent |
-| `task_state` | Final task state (e.g. `TASK_STATE_COMPLETED`, `WORKING`) |
-| `metadata` | Response metadata (merged task + artifact level) |
-
-### Example
+Alternatively, supply an `AuthProvider`:
 
 ```python
-sender = ExtensionSender(transport)
-
-# Authorization-T: send whitelist strategy before workflow
-auth = await sender.send_authorization(
-    "SPN Domain Agent",
-    "Authorize diagnosis operations",
-    "Task type: fault diagnosis, operations: optical module replacement, port reset"
-)
-
-# Notification-T: subscribe to recovery results
-notif = await sender.send_notification(
-    "SPN Domain Agent",
-    "Subscribe to recovery notifications",
-    "Topic: service-recovery-execution-result"
-)
-```
-
----
-
-## 6. Layer 0: A2ATransport + Facades
-
-Use this layer directly when you need manual control of the transport and
-the send lifecycle.
-
-```python
-from workflow_engine import (
-    A2ATransport, WorkflowEngineClient, ExtensionSender,
-    ControlPoint, WorkflowExecutor,
-)
-
-transport = A2ATransport(
-    agent_cards=agent_cards,
-    a2at_env_path=".env",
-    credentials_config="agent_credentials.json",
-    ssl_verify=False,
-)
-
-# Workflow facade
-engine_client = WorkflowEngineClient(transport)
-
-# One-shot pre-positioning facade (before the workflow)
-sender = ExtensionSender(transport)
-auth_result = await sender.send_authorization("agent_a", "authorize", "Diagnose SPN fault")
-notif_result = await sender.send_notification("agent_a", "subscribe recovery", "Diagnose SPN fault")
-
-# Then run the workflow
-executor = WorkflowExecutor(
-    workflow=workflow,
-    control_point=MyControlPoint(),
-    engine_client=engine_client,
-    runtime_intent="Diagnose SPN cross-city fault",
-)
-result = await executor.run()
-await transport.close()
-```
-
-Both facades share one transport. `WorkflowEngineClient` owns the workflow
-send path (Task-T generation, Negotiation-T auto-loop, event callback);
-`ExtensionSender` owns one-shot pre-positioning. Neither duplicates wire
-code.
-
----
-
-## 7. A2A-T Extensions
-
-The four extensions split into in-workflow and one-shot pre-positioning:
-
-| Extension | Lifecycle | Handler | Description |
-|---|---|---|---|
-| Task-T | in-workflow | `TaskTHandler` (auto-registered) | Generates structured task prompt on send |
-| Negotiation-T | in-workflow | `NegotiationTHandler` (auto-registered) | Extracts negotiation context on receive |
-| Authorization-T | pre-positioning | N/A (no handler) | Pre-positioned via `ExtensionSender` |
-| Notification-T | pre-positioning | N/A (no handler) | Subscription via `ExtensionSender` |
-
-The handler chain runs in every `send_message`: `before_send` (Task-T
-injects the prompt), send, `after_receive` (Negotiation-T extracts context,
-feeds the auto-loop). Pre-positioning extensions bypass this chain entirely.
-
-Prompt generation: Task-T uses the A2A-T SDK's `generateTaskPrompt`.
-Authorization-T, Notification-T, and Negotiation-T prompt generators are
-reserved on `ExtensionSender` and wired to the A2A-T SDK as support lands
-upstream; until then the engine falls back to the raw natural-language
-input.
-
----
-
-## 8. Agent Authentication
-
-The SDK provides two authentication layers. They can be used independently or combined (custom provider runs first, credentials-based auth second).
-
-### 8.1 Credentials-Based Auth
-
-When an AgentCard declares `securitySchemes` and `securityRequirements`,
-the SDK logs in to obtain a token and attaches the auth header to outbound
-requests. Configure a JSON credentials file (see README for the full field
-table) and pass the path to `A2ATransport(credentials_config=...)` or
-`execute_psop(..., credentials_config=...)`.
-
-```python
-transport = A2ATransport(
-    agent_cards=agent_cards,
-    credentials_config="agent_credentials.json",
-    ssl_verify=False,
-)
-```
-
-A dict may also be passed: `credentials_config={...}`.
-
-**Password Encryption:**
-
-Password fields support the `enc:<base64-iv>:<base64-ciphertext>` format
-(AES-256-GCM). The SDK reads the key from `A2AT_CRED_KEY` (32-byte hex)
-at runtime. To encrypt a password:
-
-```bash
-# Generate key (one-time)
-python -c "import secrets; print(secrets.token_hex(32))"
-
-# Encrypt
-export A2AT_CRED_KEY=<your-key-hex>
-python -c "from workflow_engine.client.credential_crypto import encrypt; print(encrypt('MyPassword'))"
-# Output: enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
-```
-
-Or programmatically:
-
-```python
-from workflow_engine.client.credential_crypto import encrypt
-import os
-os.environ["A2AT_CRED_KEY"] = "a1b2c3d4..."
-encrypted = encrypt("MyPassword")
-# encrypted = "enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy"
-```
-
-### 8.2 Custom AuthProvider
-
-For non-standard auth (corporate SSO, external identity providers, agents
-with no `securitySchemes` that still require auth), implement the
-`AuthProvider` ABC:
-
-```python
-from workflow_engine import AuthProvider
-
-class SsoAuthProvider(AuthProvider):
-    def __init__(self, sso_client):
-        self._sso = sso_client
-
-    def apply_auth(self, agent_name: str, agent_card, headers: dict) -> None:
-        token = self._sso.get_access_token(agent_name)
+class Provider(AuthProvider):
+    def apply_auth(self, agent_name, agent_card, headers):
+        token = token_service.get_or_refresh(agent_name)
         headers["Authorization"] = f"Bearer {token}"
 ```
 
-Register via `A2ATransport`:
+The provider owns token acquisition. The engine does not read provider-specific usernames, passwords, or login addresses. If configured credentials and the provider produce different values for the same header, the request fails.
+
+## 9. TLS and diagnostics
+
+Default TLS verifies the server with system trust. Optional parameters are `ca_certs_path`, `client_cert_path`, `client_key_path`, `client_key_password`, and `crl_path`. Missing or invalid configured files raise during construction.
+
+Set `WORKFLOW_ENGINE_PROTOCOL_LOGGING=true` to log pretty-printed final A2A request/response objects. Sensitive headers stay redacted unless the separate sensitive-header flag is explicitly enabled. Protocol logs are diagnostic representations; transport internals may still prevent observation of exact wire bytes.
+
+## 10. Workflow retrieval
 
 ```python
-transport = A2ATransport(
-    agent_cards=agent_cards,
-    auth_provider=SsoAuthProvider(sso_client),
-    ssl_verify=False,
-)
+matches = await search_psop(base_url, intent, top_n=5, access_token=token)
+workflow = await load_psop(base_url, matches[0].workflow_id, access_token=token)
+
+registry = RegistryClient(registry_url)
+agent_cards = await registry.fetch_agent_cards()
 ```
 
-`apply_auth` is called on **every** message send, regardless of whether
-the AgentCard declares `securitySchemes`. Typical use cases:
-
-- AgentCard has no `securitySchemes` but the server still requires auth
-- Auth tokens come from an external identity provider (e.g. corporate SSO)
-- Non-standard auth headers (e.g. `X-Custom-Token`, `X-Request-Signature`)
-
-### 8.3 Combining Both
-
-```python
-transport = A2ATransport(
-    agent_cards=agent_cards,
-    credentials_config="agent_credentials.json",  # credentials auth
-    auth_provider=SsoAuthProvider(sso_client),     # custom auth (runs first)
-    ssl_verify=False,
-)
-```
-
----
-
-## 9. Integration Checklist
-
-1. [ ] Install: `pip install workflow-exec-engine`
-2. [ ] Implement `ControlPoint` (at minimum: `on_task` + `on_route`)
-3. [ ] Get AgentCards (from registry or custom source)
-4. [ ] Load a PSOP workflow (`load_psop`) or build a `Workflow` from dict
-5. [ ] Configure agent auth (optional: `credentials_config` or `auth_provider`)
-6. [ ] Pre-position Authorization-T / Notification-T via `ExtensionSender` (optional)
-7. [ ] Run with `execute_psop` (Layer 2) or `WorkflowExecutor` (Layer 1)
-8. [ ] Drain the event stream; persist results in `on_finish`
+`ssl_verify=False` is available for controlled development endpoints with untrusted certificates. It is scoped to the created HTTP client and does not change process-wide TLS defaults.

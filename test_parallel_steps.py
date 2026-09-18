@@ -9,9 +9,10 @@ import time
 import pytest
 from workflow_engine.core.executor import WorkflowExecutor
 from workflow_engine.core.models import (
-    Workflow, WorkflowStep, Task, StepType, JumpCondition, TaskResponse, RouteDecision,
+    MessageContent, Workflow, WorkflowStep, Task, StepType, JumpCondition,
 )
 from workflow_engine.control.control_points import ControlPoint
+from workflow_engine.client.stub_engine_client import StubWorkflowEngineClient
 
 
 class _ConcurrencyCP(ControlPoint):
@@ -19,13 +20,10 @@ class _ConcurrencyCP(ControlPoint):
     def __init__(self):
         self.dispatch_times: dict = {}
 
-    async def on_task(self, request, engine_client):
+    async def on_task(self, request):
         self.dispatch_times[request.agent_name] = time.monotonic()
         await asyncio.sleep(0.2)
-        return TaskResponse(success=True, output=f"done:{request.agent_name}")
-
-    async def on_route(self, step_name, results, conditions):
-        return RouteDecision(next_step=conditions[0].step)
+        return MessageContent.text(f"task:{request.agent_name}")
 
 
 def _two_parallel_workflow() -> Workflow:
@@ -48,10 +46,7 @@ async def test_parallel_step_dispatch():
     """Two layer-0 steps must dispatch concurrently, not sequentially."""
     wf = _two_parallel_workflow()
     cp = _ConcurrencyCP()
-    mock_client = type("Stub", (), {
-        "set_control_point": lambda self, cp: None,
-        "set_event_callback": lambda self, cb: None,
-    })()
+    mock_client = StubWorkflowEngineClient()
     executor = WorkflowExecutor(workflow=wf, control_point=cp, engine_client=mock_client)
     result = await executor.run()
     assert result.success, f"Workflow failed: {result.error}"
@@ -74,10 +69,7 @@ async def test_sequential_workflow_still_works():
                      next=[JumpCondition(step="endNode", condition="")], layer=1),
     ])
     cp = _ConcurrencyCP()
-    mock_client = type("Stub", (), {
-        "set_control_point": lambda self, cp: None,
-        "set_event_callback": lambda self, cb: None,
-    })()
+    mock_client = StubWorkflowEngineClient()
     executor = WorkflowExecutor(workflow=wf, control_point=cp, engine_client=mock_client)
     result = await executor.run()
     assert result.success

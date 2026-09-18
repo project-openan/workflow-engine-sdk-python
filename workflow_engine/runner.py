@@ -27,30 +27,38 @@ iterator).
 
 import asyncio
 import time
+from collections.abc import Mapping
+from dataclasses import fields, is_dataclass
 from typing import Any, AsyncIterator, Awaitable, Callable, Optional, Union
 
+from google.protobuf.json_format import MessageToDict
+from google.protobuf.message import Message as ProtobufMessage
 from loguru import logger
 
-from workflow_engine.core.models import Workflow, ExecutionResult
-from workflow_engine.core.executor import WorkflowExecutor
-from workflow_engine.client.engine_client import WorkflowEngineClient
 from workflow_engine.client.a2a_transport import A2ATransport
+from workflow_engine.client.engine_client import WorkflowEngineClient
 from workflow_engine.control.control_points import ControlPoint, EventCallback
+from workflow_engine.core.executor import WorkflowExecutor
+from workflow_engine.core.models import ExecutionResult, Workflow
 
 
 def _serialize(data: Any) -> Any:
     """Make event data JSON-serializable (pydantic models, protobuf, etc.)."""
     if data is None or isinstance(data, (str, int, float, bool)):
         return data
+    if isinstance(data, ProtobufMessage):
+        return MessageToDict(data, preserving_proto_field_name=False)
     if hasattr(data, "model_dump"):
         try:
             return data.model_dump()
         except Exception:
             pass
-    if isinstance(data, dict):
+    if isinstance(data, Mapping):
         return {k: _serialize(v) for k, v in data.items()}
     if isinstance(data, (list, tuple)):
         return [_serialize(v) for v in data]
+    if is_dataclass(data):
+        return {field.name: _serialize(getattr(data, field.name)) for field in fields(data)}
     if hasattr(data, "__dict__"):
         try:
             return {k: _serialize(v) for k, v in data.__dict__.items()
@@ -104,10 +112,17 @@ async def execute_psop(
     engine_client: Optional[WorkflowEngineClient] = None,
     runtime_intent: str = "",
     lang: str = "zh",
-    a2at_env_path: Optional[str] = None,
     credentials_config: Optional[Union[str, dict]] = None,
     ssl_verify: bool = True,
     ca_certs_path: Optional[str] = None,
+    client_cert_path: Optional[str] = None,
+    client_key_path: Optional[str] = None,
+    client_key_password: Optional[str] = None,
+    crl_path: Optional[str] = None,
+    auth_provider=None,
+    preferred_protocol: Optional[str] = None,
+    send_timeout_seconds: int = 600,
+    max_negotiation_exchanges: int = 3,
     on_finish: Optional[Callable[[ExecutionResult, list], Awaitable[None]]] = None,
     on_event: Optional[Callable[[dict], Any]] = None,
 ) -> AsyncIterator[dict]:
@@ -142,21 +157,26 @@ async def execute_psop(
         workflow = psop
 
     emitter = _EventEmitter()
-    if engine_client is None:
+    owns_client = engine_client is None
+    if owns_client:
         transport = A2ATransport(
             agent_cards=agent_cards,
-            a2at_env_path=a2at_env_path,
             credentials_config=credentials_config,
             ssl_verify=ssl_verify,
             ca_certs_path=ca_certs_path,
+            client_cert_path=client_cert_path,
+            client_key_path=client_key_path,
+            client_key_password=client_key_password,
+            crl_path=crl_path,
+            auth_provider=auth_provider,
+            preferred_protocol=preferred_protocol,
+            send_timeout_seconds=send_timeout_seconds,
         )
-        engine_client = WorkflowEngineClient(
-            transport, event_callback=emitter,
+        engine_client = WorkflowEngineClient.owning(
+            transport,
+            event_callback=emitter,
+            max_negotiation_exchanges=max_negotiation_exchanges,
         )
-    else:
-        # Attach the emitter to a caller-provided client so its
-        # agent_request/agent_response events reach this stream.
-        engine_client.set_event_callback(emitter)
     executor = WorkflowExecutor(
         workflow=workflow,
         control_point=control_point,
@@ -179,10 +199,11 @@ async def execute_psop(
             logger.error(f"[execute_psop] Execution failed: {e}", exc_info=True)
             holder["error"] = str(e)
         finally:
-            try:
-                await engine_client.close()
-            except Exception:
-                pass
+            if owns_client:
+                try:
+                    await engine_client.close()
+                except Exception:
+                    pass
 
         result: ExecutionResult = holder.get("result") or ExecutionResult(
             success=False, error=holder.get("error") or "Unknown error"

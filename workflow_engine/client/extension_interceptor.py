@@ -17,9 +17,8 @@
 
 """A2A Extension interceptor - injects A2A-Extensions HTTP header.
 
-Reads the agent's declared extensions from AgentCard.capabilities.extensions[].uri
-and sets the A2A-Extensions header so the server knows which extensions
-the client supports.
+Advertises only extension URIs that are both declared by the AgentCard and
+activated by the current message.
 """
 
 from typing import List
@@ -47,20 +46,20 @@ class ExtensionInterceptor(ClientCallInterceptor if _A2A_AVAILABLE else object):
             args.context = ClientCallContext()
         if args.context.service_parameters is None:
             args.context.service_parameters = {}
-        # Only advertise extensions that are actually present in this message's metadata.
-        # Java SDK's ExtensionInterceptor.filterActiveExtensions does the same: it inspects
-        # the payload (message metadata) and only includes URIs that appear as keys.
-        payload = args.payload if hasattr(args, "payload") else None
+        # Advertise only extensions activated by this message, never every
+        # capability declared by the target AgentCard.
+        payload = args.input
         active_uris = []
         if isinstance(payload, dict):
             for uri in self._uris:
                 if uri in payload:
                     active_uris.append(uri)
-        elif hasattr(payload, "message") and hasattr(payload.message, "metadata"):
+        elif hasattr(payload, "message"):
+            activated = set(getattr(payload.message, "extensions", ()) or ())
             meta = payload.message.metadata
             meta_keys = set(meta.keys()) if meta else set()
             for uri in self._uris:
-                if uri in meta_keys:
+                if uri in activated or uri in meta_keys:
                     active_uris.append(uri)
         if not active_uris:
             return
@@ -69,7 +68,6 @@ class ExtensionInterceptor(ClientCallInterceptor if _A2A_AVAILABLE else object):
         merged = sorted(get_requested_extensions([*existing_values, *active_uris]))
         extension_value = ",".join(merged)
         args.context.service_parameters[HTTP_EXTENSION_HEADER] = extension_value
-        args.context.service_parameters["x-a2a-extensions"] = extension_value
         logger.info(f"[Extensions] Set {HTTP_EXTENSION_HEADER}={extension_value}")
 
     async def after(self, args: AfterArgs) -> None:

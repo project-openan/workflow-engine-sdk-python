@@ -15,12 +15,7 @@
 #    License for the specific language governing permissions and limitations
 #    under the License.
 
-"""SSL context factory for outbound HTTPS calls.
-
-Self-contained - does not depend on the orchestration center's config system.
-Accepts a config dict with SSL parameters, or returns False (skip verification)
-when no config is provided.
-"""
+"""Fail-closed SSL context factory for outbound HTTPS calls."""
 
 import os
 import ssl
@@ -29,7 +24,7 @@ from loguru import logger
 
 
 def create_ssl_context(
-    verify_server: bool = False,
+    verify_server: bool = True,
     ca_certs_path: Optional[str] = None,
     cert_path: Optional[str] = None,
     key_path: Optional[str] = None,
@@ -53,32 +48,31 @@ def create_ssl_context(
         logger.warning("Outbound TLS verification disabled. Insecure for production.")
         return False
 
-    try:
-        ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
+    ctx = ssl.create_default_context(ssl.Purpose.SERVER_AUTH)
 
-        if ca_certs_path and os.path.exists(ca_certs_path):
-            ctx.load_verify_locations(ca_certs_path)
-            logger.info(f"Client SSL: loaded CA trust store from {ca_certs_path}")
-        else:
-            logger.warning(f"Client SSL: CA trust store not found at {ca_certs_path}, using system default")
+    if ca_certs_path:
+        if not os.path.isfile(ca_certs_path):
+            raise FileNotFoundError(f"CA trust store not found: {ca_certs_path}")
+        ctx.load_verify_locations(ca_certs_path)
+        logger.info(f"Client SSL: loaded CA trust store from {ca_certs_path}")
 
-        if cert_path and key_path and os.path.exists(cert_path) and os.path.exists(key_path):
-            try:
-                ctx.load_cert_chain(
-                    certfile=cert_path,
-                    keyfile=key_path,
-                    password=key_password if key_password else None,
-                )
-                logger.info("Client SSL: loaded client identity cert for mTLS")
-            except Exception as e:
-                logger.warning(f"Client SSL: could not load client cert chain: {e}")
+    if bool(cert_path) != bool(key_path):
+        raise ValueError("Both client certificate and private key are required for mTLS")
+    if cert_path and key_path:
+        if not os.path.isfile(cert_path) or not os.path.isfile(key_path):
+            raise FileNotFoundError("Client certificate or private key not found")
+        ctx.load_cert_chain(
+            certfile=cert_path,
+            keyfile=key_path,
+            password=key_password if key_password else None,
+        )
+        logger.info("Client SSL: loaded client identity cert for mTLS")
 
-        if crl_path and os.path.exists(crl_path):
-            ctx.load_verify_locations(crl_path)
-            ctx.verify_flags |= ssl.VERIFY_CRL_CHECK_LEAF
-            logger.info(f"Client SSL: enabled CRL checking from {crl_path}")
+    if crl_path:
+        if not os.path.isfile(crl_path):
+            raise FileNotFoundError(f"CRL file not found: {crl_path}")
+        ctx.load_verify_locations(crl_path)
+        ctx.verify_flags |= ssl.VERIFY_CRL_CHECK_LEAF
+        logger.info(f"Client SSL: enabled CRL checking from {crl_path}")
 
-        return ctx
-    except Exception as e:
-        logger.error(f"Failed to build SSL context: {e}. Falling back to no verification.")
-        return False
+    return ctx

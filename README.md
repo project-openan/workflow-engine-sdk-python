@@ -1,290 +1,127 @@
-﻿# workflow-engine
+# A2A-T Workflow Engine SDK（Python）
 
-[![CI](https://github.com/project-openan/workflow-engine-sdk-python/actions/workflows/ci.yml/badge.svg)](https://github.com/project-openan/workflow-engine-sdk-python/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
+面向宿主智能体的嵌入式工作流执行引擎。引擎负责工作流 DAG、A2A 消息封装、任务与会话关联、远端任务等待、Negotiation-T 交互循环和生命周期；宿主负责业务输入解释、A2A-T 内容生成与语义校验，以及路由和协商决策。
 
-独立工作流执行 SDK，支持宿主 Agent 执行编排中心工作流（PSOP），同时保留对 A2A 通信、A2A-T 扩展与路由决策的完全控制权。SDK 自包含，不依赖编排中心任何代码。
+Python 与 Java 版本遵循同一业务契约。Python 当前要求 Python 3.12+、`a2a-sdk>=1.1.2,<2` 和 `a2a-t-sdk>=1.0.9,<2`。
 
-> 完整设计参见 [DESIGN.md](DESIGN.md)。本文档面向集成者，快速上手与接口说明。
-
-## 设计原则
-
-| SDK 提供（协议机制） | 用户控制（业务决策） |
-|---|---|
-| A2A 消息发送、流式、SSE 归一化 | 何时 / 是否发送任务 |
-| Agent 认证（Bearer、自定义 Header，基于 AgentCard） | 凭据配置 |
-| A2A-T 扩展（Task-T、Negotiation-T、Authorization-T、Notification-T） | 授权审批、通知处理 |
-| DAG 遍历、上下文组装、状态管理 | 分支路由决策 |
-| 事件追踪 | 事件处理方式 |
-
-## 架构
-
-共享传输层 + 两个门面，职责单一：
-
-```
-A2ATransport（共享通信层：httpx + 认证 + AgentCard 映射 + SSE 消费）
-  ├── WorkflowEngineClient（工作流发送门面：Task-T 生成、Negotiation-T 自动循环、事件回调、ControlPoint 装配）
-  └── ExtensionSender（前置扩展门面：Authorization-T 一次请求 / Notification-T 长驻订阅）
-```
-
-决策层接口：
-
-- **ControlPoint** — 流程决策（`on_task` / `on_self_task` / `on_route` / `on_negotiation`）
-
-Authorization-T 和 Notification-T 都是工作流外的前置操作：Authorization-T 成功返回后结束；Notification-T
-在订阅确认后保持 SSE 长连接，其生命周期归工作台服务所有，不应随单次任务或工作流结束而关闭。
-
-```mermaid
-flowchart TB
-    subgraph User["用户（宿主 Agent）"]
-        AC["AgentCards<br/>（注册中心或自定义来源）"]
-        CP["ControlPoint<br/>流程决策"]
-    end
-    subgraph SDK["SDK（自包含）"]
-        TR["A2ATransport<br/>共享通信层"]
-        WEC["WorkflowEngineClient<br/>工作流发送"]
-        ES["ExtensionSender<br/>授权请求 / 通知订阅"]
-        WE["WorkflowExecutor<br/>DAG 遍历"]
-    end
-    subgraph Agents["远端 Agents"]
-        A1["Agent A"]
-        A2["Agent B"]
-    end
-    AC --> TR
-    TR --> WEC
-    TR --> ES
-    WEC -->|send_message| A1
-    WEC -->|send_message| A2
-    ES -->|预置发送| A1
-    WE -->|on_task/on_route| CP
-    WEC -->|on_negotiation| CP
-```
-
-## 快速开始
-
-```python
-import asyncio
-from workflow_engine import (
-    execute_psop, ControlPoint, RouteDecision,
-    TaskResponse, RegistryClient, load_psop,
-)
-
-
-class MyControlPoint(ControlPoint):
-    async def on_task(self, request, engine_client):
-        # SDK 已组装完整消息（上下文 + 任务 + 语言提示），直接发送
-        result = await engine_client.send_message(
-            request.agent_name, request.message
-        )
-        return TaskResponse(success=bool(result.text), output=result.text)
-
-    async def on_route(self, step_name, results, conditions):
-        # conditions: List[JumpCondition]，每个含 .step 与 .condition
-        # 用你的 LLM 或业务逻辑选一个分支
-        return RouteDecision(next_step=conditions[0].step)
-
-
-async def main():
-    # 1. 获取 AgentCards（注册中心或自定义来源）
-    registry = RegistryClient(url="https://registry.example.com", ssl_verify=True)
-    agent_cards = await registry.fetch_agent_cards()
-
-    # 2. 加载 PSOP 工作流
-    workflow = await load_psop(
-        base_url="https://orchestrator.example.com",
-        psop_id="your-psop-id",
-        ssl_verify=True,
-    )
-
-    # 3. 执行：execute_psop 内部构建 A2ATransport + WorkflowEngineClient
-    async for event in execute_psop(
-        psop=workflow,
-        agent_cards=agent_cards,
-        control_point=MyControlPoint(),
-        a2at_env_path=".env",
-        credentials_config="agent_credentials.json",
-        runtime_intent="诊断 SPN 跨市故障",
-        ssl_verify=True,
-    ):
-        print(f"[{event['type']}] {event['data']}")
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
-```
-
-## 分层入口
-
-| 层 | 入口 | 处理 | 你提供 |
-|---|---|---|---|
-| 2（高） | `execute_psop()` | 事件流、生命周期、取消、onFinish | ControlPoint + AgentCards + 配置 |
-| 1（中） | `WorkflowExecutor` | DAG 遍历、上下文组装、调度 | ControlPoint + WorkflowEngineClient + Workflow |
-| 0（低） | `A2ATransport` + 两个门面 | A2A 发送、认证、扩展、SSE | AgentCards + 配置 |
-
-大多数集成使用第 2 层。需要手动控制时使用第 1 层。执行授权或建立通知订阅时直接使用 `ExtensionSender`。
-
-## 用户实现的接口
-
-### ControlPoint（流程决策）
-
-| 方法 | 必需 | 调用时机 | 决定 |
-|---|---|---|---|
-| `on_task(request, engine_client)` | 是 | 步骤需向 Agent 发送任务 | 是否 / 如何发送 |
-| `on_self_task(request)` | 否（默认回显） | SELF_LOOP 步骤 | 本地处理结果 |
-| `on_route(step_name, results, conditions)` | 是 | 步骤有条件分支 | 走哪个分支 |
-| `on_negotiation(agent_name, text, result)` | 否（默认通用澄清） | Agent 返回 INPUT_REQUIRED | 补充澄清文本 |
-
-## A2ATransport + 门面（第 0 层）
-
-```python
-from workflow_engine import A2ATransport, WorkflowEngineClient, ExtensionSender
-
-transport = A2ATransport(
-    agent_cards=agent_cards,
-    a2at_env_path=".env",
-    credentials_config="agent_credentials.json",
-    ssl_verify=False,
-)
-
-# 工作流发送门面
-engine_client = WorkflowEngineClient(transport)
-
-# 前置扩展门面（工作流开始前）
-sender = ExtensionSender(transport)
-auth_result = await sender.send_authorization("agent_a", "授权诊断操作", "诊断 SPN 跨市故障")
-notif_result = await sender.send_notification("agent_a", "订阅恢复结果通知", "诊断 SPN 跨市故障")
-```
-
-两个门面共享同一个 transport，不重复 wire 代码。
-
-**前置操作的回调**：Authorization-T 的 Future 表示一次请求完成；Notification-T 的 Future 只表示订阅建立，后续事件通过通知回调持续接收。关闭工作台级 transport 才会终止该订阅。
-
-## A2A-T 扩展
-
-| 扩展 | 归属 | 说明 |
-|---|---|---|
-| Task-T | 工作流链路 | 发送时由 SDK 生成结构化任务提示并注入 `metadata["...Task-T/v1"]` |
-| Negotiation-T | 工作流链路 | 接收时从 `metadata["...NEGOTIATION-T"]` 提取协商上下文，驱动自动循环 |
-| Authorization-T | 一次性预置 | 工作流开始前通过 `ExtensionSender` 发送，`instruction` → `parts[].text`，`natural_language_input` → SDK 生成结构化策略 → `metadata["...Authorization-T/v1"]` |
-| Notification-T | 长驻订阅 | 工作流开始前通过 `ExtensionSender` 建立 SSE 订阅，`instruction` → `parts[].text`，`natural_language_input` → SDK 生成结构化订阅 → `metadata["...Notification-T/v1"]`；生命周期独立于单次工作流 |
-
-`ExtensionRegistry` 自动注册 Task-T 与 Negotiation-T（工作流内处理器）；Authorization-T / Notification-T 是预置操作，不自动注册，其 handler 类保留供手动注册处理 Agent 内联推送的数据。
-
-## 协议诊断日志
-
-INFO 日志只记录请求标识、状态、大小和耗时。确需查看完整协议正文时，可在隔离开发环境设置
-`WORKFLOW_ENGINE_PROTOCOL_LOGGING=true`；认证 Header 默认仍会脱敏。如联调必须查看原始认证 Header，
-再显式设置 `WORKFLOW_ENGINE_PROTOCOL_INCLUDE_SENSITIVE_HEADERS=true`。正文和敏感 Header 可能包含业务
-数据或凭证，禁止在生产长期启用，也不要未经清洗附到公开 Issue 或 PR。
-
-## 智能体认证配置
-
-当 AgentCard 声明 `securitySchemes` 与 `securityRequirements` 时，SDK 自动通过登录接口获取 token 并将认证头附加到出站请求。创建 JSON 文件：
-
-```json
-{
-  "agent_a": {
-    "bearerAuth": {
-      "login_url": "https://127.0.0.1:8080/auth/login",
-      "method": "POST",
-      "content_type": "application/json",
-      "request_fields": { "username": "user", "password": "pass" },
-      "token_field": "access_token",
-      "token_ttl": 3600,
-      "auth_header": "Authorization",
-      "auth_header_prefix": "Bearer "
-    }
-  }
-}
-```
-
-| 字段 | 必填 | 默认 | 说明 |
-|---|---|---|---|
-| login_url | 是 | - | 获取 token 的 URL |
-| method | 否 | POST | HTTP 方法 |
-| content_type | 否 | application/json | 请求内容类型 |
-| request_fields | 否 | - | 请求体字段（覆盖 username/password） |
-| token_field | 否 | accessSession | 响应中提取 token 的路径（点分隔） |
-| token_ttl | 否 | 3600 | token 缓存时长（秒） |
-| auth_header | 否 | Authorization | 自定义认证头名 |
-| auth_header_prefix | 否 | 空 | token 前缀（如 Bearer） |
-| accept_header | 否 | - | 自定义 Accept 头 |
-
-智能体名称须与 AgentCard 的 `name` 一致；认证方案名须与 `securitySchemes` 键一致。也可直接传 dict：`credentials_config=dict`。参见 `examples/agent_credentials.example.json`。
-
-**密码加密:**
-
-`request_fields` 中的密码字段支持 `enc:` 前缀加密格式 `enc:<base64-iv>:<base64-ciphertext>`，算法为 AES-256-GCM。SDK 运行时从 `A2AT_CRED_KEY` 环境变量读取密钥自动解密。
+## 安装
 
 ```bash
-# 1. 生成 32 字节密钥 (仅首次)
-python -c "import secrets; print(secrets.token_hex(32))"
-
-# 2. 设置密钥环境变量
-export A2AT_CRED_KEY=a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0c1d2e3f4a5b6c7d8e9f0a1b2
-
-# 3. 加密密码
-python -c "from workflow_engine.client.credential_crypto import encrypt; print(encrypt('Admin@123'))"
-# 输出: enc:xxxxxxxxxxxx:yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy
+python -m pip install workflow-exec-engine
 ```
 
-将输出的 `enc:...` 值填入 credentials JSON 的密码字段即可。
+执行引擎直接使用最新版 A2A-T core 元数据类型识别协议，但不会调用 LLM，也不会替宿主生成或校验 Task-T、Negotiation-T、Authorization-T、Notification-T 的业务内容；这些内容操作仍由宿主调用 `a2a-t-sdk` 完成。
 
-### 自定义 AuthProvider
-
-对于非标准认证（企业 SSO、外部身份提供商、AgentCard 无 `securitySchemes` 但仍需认证），实现 `AuthProvider` ABC：
+## 最小集成
 
 ```python
-from workflow_engine import AuthProvider
-
-class SsoAuthProvider(AuthProvider):
-    def apply_auth(self, agent_name: str, agent_card, headers: dict) -> None:
-        token = sso_client.get_access_token(agent_name)
-        headers["Authorization"] = f"Bearer {token}"
-
-transport = A2ATransport(
-    agent_cards=agent_cards,
-    auth_provider=SsoAuthProvider(),
+from a2a.types import Part
+from a2a_t.client import A2ATClient
+from a2a_t.core.standard_templates import PRIVATE_LINE_COMPLAINT_URI
+from workflow_engine import (
+    A2ATransport, A2atMessages, ControlPoint, ExtensionSender,
+    MessageContent, NegotiationReply, RouteDecision, TaskResult,
+    WorkflowEngineClient, WorkflowExecutor,
 )
+
+
+class BusinessCallbacks(ControlPoint):
+    async def on_task(self, request):
+        # a2a-t-sdk 负责内容生成；执行引擎只接收生成结果并发送。
+        generated = a2at.generate_task_prompt_from_text(
+            request.input.text,
+            PRIVATE_LINE_COMPLAINT_URI,
+        )
+        return A2atMessages.from_generated(
+            generated,
+            [Part(text=request.instruction)],
+        )
+
+    async def on_self_task(self, request):
+        outputs = aggregate(request.workflow_input.upstream_results)
+        return TaskResult.succeeded(outputs)
+
+    async def on_route(self, request):
+        # 每条非空条件边独立调用；允许多条边同时返回 true。
+        return RouteDecision.allow() if matches(request.condition) else RouteDecision.deny()
+
+    async def on_negotiation(self, request):
+        generated = generate_terminal_negotiation_reply_with_a2at(request)
+        return NegotiationReply.send(
+            A2atMessages.from_generated(generated, [Part(text="补充后的业务内容")])
+        )
+
+
+a2at = A2ATClient(env_path=a2at_env_path)
+transport = A2ATransport(agent_cards=agent_cards)
+client = WorkflowEngineClient(transport)
+result = await WorkflowExecutor(workflow, BusinessCallbacks(), client).run()
+await transport.close()
 ```
 
-两种方式可组合使用：`AuthProvider` 先执行，credentials 认证后执行，各自向请求头注入认证信息。
+`on_task` 不接收客户端对象，也不自行发送消息。这样业务代码只负责最终内容，引擎统一保证 A2A 信封、上下文 ID、远端任务 ID、协议头和后续协商仍属于同一次任务交互。
 
-## 文件结构
+## 路由规则
 
-```
-workflow-exec-engine/
-├── README.md              # 本文档
-├── README_en.md           # English
-├── DESIGN.md              # 设计文档
-├── DEVELOPER_GUIDE.md     # 开发者指南
-├── pyproject.toml
-├── examples/
-│   ├── quickstart.py
-│   └── execute_psop_demo.py
-└── workflow_engine/
-    ├── __init__.py         # 公共 API 导出
-    ├── runner.py           # execute_psop 高层运行器
-    ├── core/               # 核心执行
-    │   ├── models.py       # 数据模型
-    │   ├── context_builder.py
-    │   └── executor.py     # WorkflowExecutor DAG 遍历
-    ├── client/             # 通信层
-    │   ├── a2a_transport.py     # A2ATransport 共享通信层
-    │   ├── engine_client.py     # WorkflowEngineClient 工作流门面
-    │   ├── extension_sender.py  # ExtensionSender 一次性门面
-    │   ├── extension_handlers.py
-    │   ├── extensions.py        # A2ATExtension 枚举
-    │   ├── auth_manager.py
-    │   ├── credential_service.py
-    │   ├── ssl_context.py
-    │   └── sse_normalization.py
-    ├── control/            # 决策接口
-    │   └── control_points.py    # ControlPoint + EventType
-    └── registry/           # 注册中心集成（可选）
-        └── registry_client.py
+- 空条件边：无需调用 `on_route`，默认放行。
+- 非空条件边：每条边独立调用一次 `on_route(RouteRequest)`。
+- 一个节点可激活 0 到 N 条后继边；全部拒绝表示该分支正常结束。
+- 同一节点的全部条件判断完成后才调度后继节点；任一判断异常时不调度任何后继节点。
+
+## 上游结果
+
+引擎不再把前置结果拼成 `Runtime Context` Markdown。回调通过 `request.workflow_input` 获取：
+
+- `runtime_intent`：本次执行的运行时意图；
+- `upstream_results`：按步骤分组的上游任务结果；
+- 每个任务结果包含有序 `outputs`、来源 Agent/skill、逻辑任务 ID、状态和安全错误信息。
+
+工作流的 `context_from` 控制聚合范围：省略时使用直接前驱，`["*"]` 使用全部祖先，空列表表示不传上游结果，指定名称时仅传对应祖先步骤。
+
+## 独立协议操作
+
+Authorization-T 和 Notification-T 不属于工作流因果链，应使用独立 `A2ATransport` 和 `ExtensionSender`：
+
+```python
+sender = ExtensionSender(independent_transport)
+authorization = await sender.send_authorization(agent_name, authorization_content)
+
+subscription = sender.open_notification(agent_name, notification_content, on_notification)
+ack = await subscription.acknowledgement
+# 收到业务结果后由集成方显式关闭：
+subscription.close()
+await subscription.completion
 ```
 
-## 许可证
+授权或订阅失败不会自动阻断后续工作流。`send_authorization` 会等待授权任务到达终态，集成方通过 `is_success` 判断结果；订阅确认通过 `is_failure` 排除失败、拒绝或取消。订阅确认与长连接结束是两个不同 Future；`heartbeat` 和 `is_healthy()` 可用于本地存活性判断。
 
-Apache License 2.0
+## 远端任务管理
+
+```python
+await client.get_task(agent_name, task_id)
+page = await client.list_tasks(agent_name, list_tasks_request)
+await client.cancel_task(agent_name, task_id)
+await client.subscribe_to_task(agent_name, task_id, on_event)
+```
+
+这些是标准 A2A 任务接口；取消任务不等同于 Negotiation-T Abort。
+
+同一个 `WorkflowEngineClient` 同一时刻只能绑定一个工作流执行；并发执行应创建独立 client。协商在本地停止、超时、取消或协议校验失败时，引擎会对已知远端任务做有界的尽力取消，取消失败只记录日志，不覆盖原始错误。
+
+## 认证与 TLS
+
+`A2ATransport` 支持 AgentCard 声明的凭据配置、自定义 `AuthProvider`、自定义 CA、mTLS 客户端证书、CRL、协议偏好和发送超时。默认验证服务端证书；指定的证书文件缺失或无效时启动失败，不会静默降级为不校验。
+
+仅受控开发环境可显式配置 `ssl_verify=False`。调用方传入的 `httpx.AsyncClient` 仍由调用方关闭；执行引擎只关闭自己创建的客户端资源。
+
+## 文档与验证
+
+- [设计说明](DESIGN.md)
+- [集成开发指南](DEVELOPER_GUIDE.md)
+- [英文 README](README_en.md)
+
+```bash
+python -m pip install -e ".[dev]"
+python -m pytest -q
+python -m build
+```

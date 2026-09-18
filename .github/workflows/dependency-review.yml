@@ -14,3 +14,5 @@ jobs:
       - uses: actions/dependency-review-action@v4
         with:
           fail-on-severity: high
+        # Temporary: this repository has not enabled Dependency graph yet.
+        continue-on-error: true

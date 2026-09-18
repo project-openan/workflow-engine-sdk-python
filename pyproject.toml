@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "workflow-exec-engine"
-version = "0.0.9"
+version = "0.1.0"
 description = "Standalone workflow execution SDK for A2A-T multi-agent orchestration"
 readme = "README.md"
 license = "Apache-2.0"

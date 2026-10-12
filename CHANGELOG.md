@@ -60,7 +60,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - A `Notification-T` subscription whose remote never acknowledged stayed pending
   forever, pinning the caller's coroutine and the connection. The first
   acknowledgement is now bounded by `notification_ack_timeout_seconds` (default
-  300s); SSE idleness after the acknowledgement is deliberately not bounded.
+  300s). After acknowledgement, a separate no-transport-activity deadline applies;
+  heartbeats renew that deadline and notification result states do not close the stream.
 - `sse_normalization` patched `json_format.Parse` with a duplicate keyword
   argument, so every `StreamResponse` text parse raised `TypeError`. The patch
   now covers only `ParseDict`, the entry point that actually performs the
@@ -94,7 +95,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `last_business_event_at`. This matches the Java engine's `NotificationSubscription`.
 - `NotificationSubscription.is_healthy()` judges liveness from transport activity, so a
   subscription that is only receiving heartbeats is no longer reported as dead. A
-  freshly opened subscription counts as healthy, since opening the stream is activity.
+  freshly opened subscription is not yet healthy: opening starts its idle budget but
+  is not received-byte evidence. Health becomes true after actual transport activity.
 - A notification stream is now **released after `send_timeout_seconds` without any
   transport activity** (configurable through
   `ExtensionSender(notification_idle_timeout_seconds=...)`), mirroring the Java engine's

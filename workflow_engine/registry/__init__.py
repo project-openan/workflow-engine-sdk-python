@@ -17,5 +17,6 @@
 
 
 from workflow_engine.registry.registry_client import RegistryClient, load_psop, search_psop
+from workflow_engine.registry.http_auth import BearerAuth, HttpAuthProvider, OrchestrationAccountAuth
 
-__all__ = ["RegistryClient", "load_psop", "search_psop"]
+__all__ = ["RegistryClient", "load_psop", "search_psop", "BearerAuth", "HttpAuthProvider", "OrchestrationAccountAuth"]

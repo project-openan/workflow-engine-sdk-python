@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+Preparing version 0.1.1; no existing 0.1.0 distribution is overwritten.
+
+### Added
+- Independent `HttpAuthProvider` / `OrchestrationAccountAuth` management authentication:
+  lazy shared-account login, cached expiry, bounded 401 renewal, origin/API scoping,
+  and credential-safe login errors. Login shares the PSOP request's TLS/mTLS identity.
+- Dynamic `BearerAuth` and per-request registry authentication share the management
+  HTTP boundary. Custom headers and provider errors are validated without exposing
+  credentials; registry writes are never automatically replayed.
+
 ### Fixed
+- Require A2A-T SDK 1.2.0 or newer, where the retired negotiation state-machine
+  APIs are removed; content generation and validation continue to use SDK APIs.
 - Protocol diagnostics now redact credential-shaped values in request and response
   bodies as well as headers. Workflow failure and callback logs also redact
   credential-shaped exception text; registry search no longer logs raw intent.

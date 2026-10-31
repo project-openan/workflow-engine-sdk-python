@@ -102,8 +102,8 @@ def service_base_url(value: str) -> str:
         or not parsed.hostname
         or parsed.username is not None
         or parsed.password is not None
-        or parsed.query
-        or parsed.fragment
+        or "?" in value
+        or "#" in value
         or "\\" in value
         or "\\" in path
         or any(part in {".", ".."} for part in path.split("/"))
@@ -136,7 +136,7 @@ class OrchestrationAccountAuth:
 
     def __init__(self, base_url: str, username: str, password: str) -> None:
         self._base_url = service_base_url(base_url)
-        self._api_path = urlsplit(self._base_url).path + "/api/v1/orchestrate/"
+        self._api_path = unquote(urlsplit(self._base_url).path) + "/api/v1/orchestrate/"
         if (
             not isinstance(username, str)
             or not username.strip()

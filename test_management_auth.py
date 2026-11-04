@@ -269,6 +269,25 @@ def test_management_timeouts_must_be_finite_positive_numbers(timeout):
 
 
 @pytest.mark.asyncio
+async def test_registry_single_card_lookup_rejects_ambiguous_names(mock_http):
+    from workflow_engine import RegistryClient
+
+    north = {"name": "Shared", "provider": {"organization": "North"}}
+    south = {"name": "Shared", "provider": {"organization": "South"}}
+
+    def handle(request):
+        cards = [south] if request.url.params.get("organization") == "South" else [north, south]
+        return httpx.Response(200, json={"agentCards": cards})
+
+    mock_http(handle)
+    registry = RegistryClient("https://registry.test")
+    with pytest.raises(ValueError, match="Multiple AgentCards matched"):
+        await registry.fetch_agent_card("Shared")
+    card = await registry.fetch_agent_card("Shared", "South")
+    assert card.provider.organization == "South"
+
+
+@pytest.mark.asyncio
 async def test_registry_uses_dynamic_bearer_and_never_replays_registration(mock_http):
     from workflow_engine import BearerAuth, RegistryClient
 

@@ -43,6 +43,7 @@ from workflow_engine.registry.http_auth import (
 )
 
 if TYPE_CHECKING:
+    from a2a.types import AgentCard
     from workflow_engine.core.models import Workflow, WorkflowSearchResult
 
 
@@ -242,8 +243,8 @@ class RegistryClient:
             crl_path,
         )
 
-    async def fetch_agent_cards(self) -> list[Any]:
-        """Fetch all AgentCards. Returns protobuf objects if a2a-sdk available, else dicts."""
+    async def fetch_agent_cards(self) -> "list[AgentCard]":
+        """Fetch all AgentCards as protobuf objects."""
         import httpx
 
         logger.info(f"[Registry] Fetching all agent cards from {self.url}")
@@ -273,8 +274,10 @@ class RegistryClient:
         )
         return cards
 
-    async def fetch_agent_card(self, name: str, organization: str | None = None) -> Any:
-        """Fetch a single AgentCard by name."""
+    async def fetch_agent_card(
+        self, name: str, organization: str | None = None
+    ) -> "AgentCard | None":
+        """Fetch a unique AgentCard by name and optional organization."""
         import httpx
 
         logger.info(f"[Registry] Fetching agent card: name={name}, org={organization}")
@@ -298,6 +301,8 @@ class RegistryClient:
             if not cards:
                 logger.warning(f"[Registry] Agent card not found: name={name}")
                 return None
+            if len(cards) > 1:
+                raise ValueError("Multiple AgentCards matched. Supply a unique organization and name.")
             raw = cards[0]
             from a2a.types import AgentCard
             from google.protobuf.json_format import Parse

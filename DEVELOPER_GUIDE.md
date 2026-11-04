@@ -4,7 +4,7 @@
 
 - Python 3.12 or newer
 - `a2a-sdk>=1.1.2,<2`
-- `a2a-t-sdk>=1.1.0,<2` (the engine uses its core metadata contract; host callbacks use its content APIs)
+- `a2a-t-sdk>=1.2.0,<2` (the engine uses its core metadata contract; host callbacks use its content APIs; removed state-machine APIs are unsupported)
 
 ```bash
 python -m pip install -e ".[dev]"

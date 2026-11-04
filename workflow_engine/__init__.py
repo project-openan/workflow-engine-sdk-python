@@ -71,7 +71,7 @@ from workflow_engine.control import ControlPoint, EventCallback, EventType
 from workflow_engine.control import (
     NegotiationStrategy, DefaultControlPoint,
 )
-from workflow_engine.registry import RegistryClient, load_psop, search_psop
+from workflow_engine.registry import RegistryClient, load_psop, search_psop, BearerAuth, HttpAuthProvider, OrchestrationAccountAuth
 from workflow_engine.runner import execute_psop
 
 __all__ = [
@@ -94,9 +94,9 @@ __all__ = [
     "ControlPoint", "EventCallback", "EventType",
     "NegotiationStrategy", "DefaultControlPoint",
     # Registry (optional)
-    "RegistryClient", "load_psop", "search_psop",
+    "RegistryClient", "load_psop", "search_psop", "BearerAuth", "HttpAuthProvider", "OrchestrationAccountAuth",
     # High-level runner
     "execute_psop",
 ]
 
-__version__ = "0.1.0"
+__version__ = "0.1.1"

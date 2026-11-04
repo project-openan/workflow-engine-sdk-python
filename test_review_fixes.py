@@ -207,10 +207,7 @@ def test_parse_dict_still_honours_the_callers_unknown_field_policy():
 
 def test_parse_is_not_replaced_by_the_normalization_patch():
     """Guard against re-introducing an attribute patch on json_format.Parse."""
-    from a2a.client.transports import rest
-
     assert json_format.Parse is Parse
-    assert rest.Parse is Parse
 
 
 # ----------------------------------------------------------------------

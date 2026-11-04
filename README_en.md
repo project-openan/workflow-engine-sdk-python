@@ -107,6 +107,20 @@ A `WorkflowEngineClient` can be bound to only one active workflow execution at a
 
 Only controlled development environments should use `ssl_verify=False`. A caller-supplied `httpx.AsyncClient` remains caller-owned; the engine closes only resources it creates.
 
+Management HTTP uses a separate `HttpAuthProvider`. Share `OrchestrationAccountAuth`
+between `load_psop` and `search_psop` to acquire a first-party account token lazily,
+cache it until expiry and renew once after a 401. Login uses the helper's TLS/mTLS
+identity; credentials are scoped to that center's public orchestration API, including
+any deployment prefix. Redirects are rejected.
+
+For registry authentication use `RegistryClient(url, auth_provider=BearerAuth(token_supplier))`
+or implement async `headers(url, client)` with your existing OAuth2 library. OAuth2
+grants and refresh tokens remain application-owned. The optional
+`invalidate(url, rejected_headers) -> bool` hook must return `True` to permit a
+single PSOP read/search retry; registry operations are never replayed automatically.
+Static `access_token` and `auth_provider` are mutually exclusive. Custom headers are
+validated for duplicate names, invalid characters and reserved transport headers.
+
 ## Documentation and verification
 
 - [Design](DESIGN.md)

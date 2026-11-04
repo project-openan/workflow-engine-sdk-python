@@ -775,11 +775,11 @@ def test_distribution_version_has_a_single_source():
     )
 
     import workflow_engine
-    assert workflow_engine.__version__ == "0.1.0"
+    assert workflow_engine.__version__ == "0.1.1"
 
 
 def test_declared_a2a_t_sdk_lower_bound_matches_the_verifier():
-    """verify_sdk.py asserts >=1.1.0, so pyproject must not advertise less."""
+    """verify_sdk.py and package metadata require the current stateless SDK."""
     import tomllib
 
     root = Path(__file__).resolve().parent
@@ -788,5 +788,5 @@ def test_declared_a2a_t_sdk_lower_bound_matches_the_verifier():
         dep for dep in data["project"]["dependencies"]
         if dep.startswith("a2a-t-sdk")
     ]
-    assert declared == ["a2a-t-sdk>=1.1.0,<2"]
-    assert "1.1.0" in (root / "verify_sdk.py").read_text(encoding="utf-8")
+    assert declared == ["a2a-t-sdk>=1.2.0,<2"]
+    assert "1.2.0" in (root / "verify_sdk.py").read_text(encoding="utf-8")

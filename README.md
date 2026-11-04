@@ -125,6 +125,40 @@ await client.subscribe_to_task(agent_name, task_id, on_event)
 
 仅受控开发环境可显式配置 `ssl_verify=False`。调用方传入的 `httpx.AsyncClient` 仍由调用方关闭；执行引擎只关闭自己创建的客户端资源。
 
+管理面 HTTP 认证独立于 AgentCard 凭据。`load_psop` / `search_psop` 可共享一个
+`OrchestrationAccountAuth`：首次请求登录 `/api/v1/auth/token`，缓存 Token，过期时续取，
+被 401 拒绝后只重登重试一次。账号只用于指定中心的公开编排 API，不跟随重定向。
+
+```python
+import os
+from workflow_engine import OrchestrationAccountAuth, load_psop, search_psop
+
+center = "https://center.example:5001"
+auth = OrchestrationAccountAuth(
+    center, os.environ["HOST_ORCHESTRATION_USERNAME"],
+    os.environ["HOST_ORCHESTRATION_PASSWORD"],
+)
+options = dict(auth_provider=auth, ssl_verify=True, ca_certs_path="/run/secrets/center-ca.pem")
+# 服务端要求 mTLS 时，额外传 client_cert_path / client_key_path；
+# client_key_password 支持加密私钥。登录和业务请求使用同一套 TLS 身份。
+matches = await search_psop(center, "诊断专线投诉", **options)
+workflow = await load_psop(center, matches[0].workflow_id, **options)
+```
+
+静态 Bearer 场景继续传 `access_token`，与 `auth_provider` 二选一；注册中心使用它自己的
+Token 和 TLS 身份，不能复用中心账号或 Agent 登录凭据。
+
+`RegistryClient(..., auth_provider=BearerAuth(token_supplier))` 可在每次请求时读取最新
+Bearer Token；OAuth2 的申请、刷新由业务已有认证库完成，也可直接实现异步的
+`HttpAuthProvider.headers(url, client)` 注入认证头。提供者可选实现
+`invalidate(url, rejected_headers) -> bool`，返回 `True` 才允许 PSOP 查询/搜索在 401
+后重试一次。注册中心操作不自动重放。认证头不允许重复名称、换行或覆盖 Host 等传输头。
+中心地址支持部署路径前缀，账号令牌仍限定在该前缀下的公开编排 API。
+
+源码版本现为 `0.1.1`，包含已发布 `0.1.0` 之后的主干修复。发布前可运行
+`python -m build` 后安装 `dist/workflow_exec_engine-0.1.1-py3-none-any.whl`；
+此说明不代表该版本已发布到 PyPI。
+
 ## 文档与验证
 
 - [设计说明](DESIGN.md)

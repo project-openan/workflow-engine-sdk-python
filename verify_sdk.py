@@ -39,7 +39,7 @@ async def on_finish(result, events):
 
 async def main():
     a2at_version = Version(version("a2a-t-sdk"))
-    assert Version("1.1.0") <= a2at_version < Version("2")
+    assert Version("1.2.0") <= a2at_version < Version("2")
     print(f"a2a-t-sdk: {a2at_version}")
     wf = build_workflow()
     print(f"step s1 type: {wf.steps[0].step_type}")

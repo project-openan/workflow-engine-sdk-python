@@ -5,9 +5,31 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.1.1]
 
-Preparing version 0.1.1; no existing 0.1.0 distribution is overwritten.
+### Upgrade notes
+
+- Validate saved PSOPs before upgrading. A subtask with an explicit `input`
+  must provide exactly one of `text` or `data`.
+- `WorkflowEngineClient.stream_message` enforces a whole-stream deadline.
+  It defaults to the transport's `send_timeout_seconds` (600 seconds). Set
+  `timeout_seconds` explicitly for an operation that needs a different budget.
+- Keep server verification enabled when supplying a CA or CRL.
+  `create_ssl_context` now rejects either option with verification disabled.
+  Client certificate authentication remains available.
+- Notification-T has a separate 300-second acknowledgement deadline by default.
+  After acknowledgement, the idle budget is renewed by transport activity,
+  including SSE heartbeats. A notification result's terminal state leaves the
+  subscription open.
+- Read `error_details["httpStatus"]` for the remote HTTP status. This replaces
+  the previous `http_status` key.
+- A single-card registry lookup raises `ValueError` if multiple cards match.
+  Pass the organization alongside the name when names can overlap.
+- Configure either `access_token` or `auth_provider` for a management HTTP
+  request. The SDK rejects a configuration that supplies both.
+- A DAG step waits for all activated ancestors to finish. At a merge, branches
+  activated in different scheduling batches now contribute their results before
+  the merge runs.
 
 ### Added
 - Independent `HttpAuthProvider` / `OrchestrationAccountAuth` management authentication:

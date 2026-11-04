@@ -18,6 +18,8 @@ Preparing version 0.1.1; no existing 0.1.0 distribution is overwritten.
   credentials; registry writes are never automatically replayed.
 
 ### Fixed
+- Release tag validation reads the package's dynamic version instead of the
+  absent static `project.version` key.
 - Require A2A-T SDK 1.2.0 or newer, where the retired negotiation state-machine
   APIs are removed; content generation and validation continue to use SDK APIs.
 - Protocol diagnostics now redact credential-shaped values in request and response

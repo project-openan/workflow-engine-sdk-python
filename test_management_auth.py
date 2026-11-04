@@ -435,3 +435,42 @@ async def test_header_only_provider_does_not_retry_rejection():
                 retry_unauthorized=True,
             )
     assert len(requests) == 1
+
+
+@pytest.mark.parametrize(
+    "base",
+    ["https://center.test?", "https://center.test#", "https://center.test/deploy?"],
+)
+def test_base_url_rejects_even_empty_query_and_fragment_delimiters(base):
+    with pytest.raises(ValueError):
+        OrchestrationAccountAuth(base, "user", "password")
+
+
+@pytest.mark.asyncio
+async def test_encoded_deployment_prefix_keeps_account_login_in_scope(mock_http):
+    requests = []
+
+    def handle(request):
+        requests.append(request)
+        if request.url.path == "/deploy/api/v1/auth/token":
+            return httpx.Response(
+                200,
+                json={
+                    "access_token": "token",
+                    "expires_in": 60,
+                    "token_type": "Bearer",
+                },
+            )
+        assert request.headers["Authorization"] == "Bearer token"
+        return httpx.Response(
+            200, json={"data": {"id": "wf", "name": "workflow", "steps": []}}
+        )
+
+    mock_http(handle)
+    base = "https://center.test/%64eploy"
+    provider = OrchestrationAccountAuth(base, "user", "password")
+    assert (await load_psop(base, "wf", auth_provider=provider)).id == "wf"
+    assert [request.url.path for request in requests] == [
+        "/deploy/api/v1/auth/token",
+        "/deploy/api/v1/orchestrate/psop/wf",
+    ]

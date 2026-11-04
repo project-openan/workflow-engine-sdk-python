@@ -2,7 +2,7 @@
 
 An embedded workflow execution SDK for host agents. The engine owns workflow DAG execution, A2A envelopes, task/context correlation, remote-task waiting, the Negotiation-T interaction loop, and lifecycle management. The host owns business-input interpretation, A2A-T content generation and semantic validation, routing, and negotiation decisions.
 
-The Python and Java engines follow the same business contract. This package requires Python 3.12+, `a2a-sdk>=1.1.2,<2`, and `a2a-t-sdk>=1.1.0,<2`.
+The Python and Java engines follow the same business contract. This package requires Python 3.12+, `a2a-sdk>=1.1.2,<2`, and `a2a-t-sdk>=1.2.0,<2`.
 
 ## Installation
 

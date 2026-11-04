@@ -349,14 +349,68 @@ Remote A2A failures use `a2a.<reason>` or `a2a.http.<status>` when no reason is 
 
 `RegistryClient`, `load_psop`, and `search_psop` accept `connect_timeout_seconds` and `read_timeout_seconds` (both default to 30 seconds). Both must be positive.
 
-## 10. Workflow retrieval
+## 10. Workflow retrieval and center authentication
+
+Center authentication is independent from dispatched-agent `AuthProvider` credentials.
+The orchestration public API uses the same account as web login: complete the first password
+change in the UI, then `POST /api/v1/auth/token` and send the returned Bearer in headers.
+Do not reuse registry credentials for the orchestration center, or put tokens in query strings.
 
 ```python
-matches = await search_psop(base_url, intent, top_n=5, access_token=token)
-workflow = await load_psop(base_url, matches[0].workflow_id, access_token=token)
+import os
+import httpx
+from workflow_engine.client.ssl_context import create_ssl_context
+from workflow_engine.registry.registry_client import RegistryClient, load_psop, search_psop
 
-registry = RegistryClient(registry_url)
+# The same TLS material/policy must be used for login and resource requests.
+tls_options = {"ssl_verify": True, "ca_certs_path": os.environ["CENTER_CA_FILE"]}
+verify = create_ssl_context(
+    verify_server=tls_options["ssl_verify"], ca_certs_path=tls_options["ca_certs_path"]
+)
+base_url = os.environ["ORCH_URL"].rstrip("/")
+intent = "Find a workflow matching the host request"
+async with httpx.AsyncClient(verify=verify, timeout=30, follow_redirects=False) as client:
+    response = await client.post(
+        base_url + "/api/v1/auth/token",
+        json={"username": os.environ["ORCH_USERNAME"], "password": os.environ["ORCH_PASSWORD"]},
+    )
+    response.raise_for_status()
+    session = response.json()
+    token = session["access_token"]
+    expires_in = session["expires_in"]  # host-owned cache deadline; never log session/token
+
+matches = await search_psop(base_url, intent, top_n=5, access_token=token, **tls_options)
+if matches:
+    workflow = await load_psop(
+        base_url, matches[0].workflow_id, access_token=token, **tls_options
+    )
+
+registry = RegistryClient(
+    os.environ["REGISTRY_URL"], access_token=os.environ["REGISTRY_API_TOKEN"], **tls_options
+)
 agent_cards = await registry.fetch_agent_cards()
 ```
+
+The example above is the host-managed path: one session, with the host acquiring and caching the
+token itself. The SDK also ships `OrchestrationAccountAuth` (0.1.1 and later), which owns that
+lifecycle instead: lazy first login to `/api/v1/auth/token` with the caller's TLS identity, a
+cached expiry on a monotonic deadline shorter than `expires_in`, a single renewal after a 401,
+and origin/API scoping so credentials never leave that center's public orchestration API.
+
+```python
+from workflow_engine import OrchestrationAccountAuth, load_psop, search_psop
+
+auth = OrchestrationAccountAuth(center_url, username, password)
+matches = await search_psop(center_url, intent, top_n=5, auth_provider=auth, **tls_options)
+```
+
+Both paths follow the same rules: never loop on 401, never refresh on 403/503, and never blindly
+replay write or execution requests. A host that already owns an OAuth2 library can instead
+implement the asynchronous `HttpAuthProvider.headers(url, client)` interface. Center accounts and
+registry tokens stay independent; registry operations are never replayed automatically.
+
+Head/source capabilities and published packages are different delivery stages. Pin a released
+version supported by the consuming center; an editable local install does not update a container
+dependency, and this documentation change does not publish a new SDK.
 
 `ssl_verify=False` is available for controlled development endpoints with untrusted certificates. It is scoped to the created HTTP client and does not change process-wide TLS defaults.

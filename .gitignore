@@ -11,3 +11,5 @@ build/
 *.tar.gz
 pip-wheel-metadata/
 .env
+.demo-spool/
+.pytest_cache/

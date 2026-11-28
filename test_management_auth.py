@@ -53,9 +53,10 @@ async def test_helpers_share_lazy_login_and_renew_rejected_token(mock_http):
             )
         if request.headers.get("Authorization") == "Bearer token-1":
             return httpx.Response(401)
-        return httpx.Response(
-            200, json={"data": {"id": "wf-1", "name": "loaded", "steps": []}}
-        )
+        data = {"id": "wf-1", "name": "loaded", "steps": []}
+        if revision := request.url.params.get("revision"):
+            data["revision"] = revision
+        return httpx.Response(200, json={"data": data})
 
     mock_http(handle)
     auth = OrchestrationAccountAuth(
@@ -68,6 +69,12 @@ async def test_helpers_share_lazy_login_and_renew_rejected_token(mock_http):
     await load_psop("https://center.test", "wf-1", auth_provider=auth)
     assert login_count == 2
     assert all(not r.url.query for r in requests)
+    revision = "a" * 64
+    pinned = await load_psop("https://center.test", "wf-1", auth_provider=auth, revision=revision)
+    assert pinned.revision == revision
+    assert requests[-1].url.params.multi_items() == [("revision", revision)]
+    assert requests[-1].headers["Authorization"] == "Bearer token-2"
+    assert login_count == 2
 
 
 @pytest.mark.asyncio
@@ -147,6 +154,8 @@ async def test_retry_is_bounded_and_does_not_follow_redirects(status, expected):
         "https://center.test:0/api/v1/orchestrate/search",
         "https://center.test/api/v1/auth/logout",
         "https://center.test/api/v1/orchestrate/search?token=secret",
+        "https://center.test/api/v1/orchestrate/psop/example?revision=" + "a" * 64 + "&unexpected=1",
+        "https://center.test/api/v1/orchestrate/psop/example?revision=latest",
         "https://center.test/api/v1/orchestrate/search#fragment",
         "https://user:password@center.test/api/v1/orchestrate/search",
         "https://center.test/api/v1/orchestrate/%2e%2e/auth/logout",
@@ -266,6 +275,26 @@ def test_management_timeouts_must_be_finite_positive_numbers(timeout):
 
     with pytest.raises(ValueError, match="positive"):
         _http_timeout(timeout, 30)
+
+
+def test_a_retrieval_gets_a_longer_read_deadline_than_a_load():
+    """The center ranks its whole catalog with a language model, so a search takes tens of seconds.
+
+    A storage-shaped deadline aborts it: measured searches against a 20-PSOP catalog took 19-47s,
+    and a third of them ran past the 30s a load allows.
+    """
+    import inspect
+
+    search = inspect.signature(search_psop).parameters
+    load = inspect.signature(load_psop).parameters
+
+    assert search["read_timeout_seconds"].default > load["read_timeout_seconds"].default
+    assert search["read_timeout_seconds"].default >= 120, "keep real headroom over a slow model"
+    assert load["read_timeout_seconds"].default == 30, "a load is a storage read; keep it short"
+    assert (
+        search["connect_timeout_seconds"].default
+        == load["connect_timeout_seconds"].default
+    ), "the connection itself is as fast for one call as for the other"
 
 
 @pytest.mark.asyncio

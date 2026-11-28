@@ -195,6 +195,7 @@ class WorkflowEngineClient:
             if interaction["negotiation_started"]:
                 self._emit(EventType.NEGOTIATION_FAILED, {
                     "agent": request.agent_name,
+                    "task_id": request.task_id,
                     "error": str(exc),
                     "error_type": type(exc).__name__,
                 })
@@ -243,6 +244,7 @@ class WorkflowEngineClient:
                 result.failure_message = "Business sent Abort; task was not completed successfully"
                 self._emit(EventType.AGENT_RESPONSE, {
                     "agent": request.agent_name,
+                    "task_id": request.task_id,
                     "response": result.text,
                     "received_messages": result.received_messages,
                 })
@@ -272,7 +274,7 @@ class WorkflowEngineClient:
                 )
                 if candidate is None:
                     return await self._finish_remote_result(
-                        request.agent_name, result, interaction,
+                        request, result, interaction,
                     )
             interaction["negotiation_started"] = True
             if exchange_number >= self._max_negotiation_exchanges:
@@ -309,7 +311,7 @@ class WorkflowEngineClient:
                     continue
                 if result.task_state != "TASK_STATE_INPUT_REQUIRED":
                     return await self._finish_remote_result(
-                        request.agent_name, result, interaction,
+                        request, result, interaction,
                     )
                 received = self._negotiation_response(result)
                 context = self._negotiation_context(received)
@@ -328,6 +330,7 @@ class WorkflowEngineClient:
             )
             self._emit(EventType.NEGOTIATION_REQUEST, {
                 "agent": request.agent_name, "request": request_model,
+                "task_id": request.task_id,
                 "exchange": exchange_number + 1,
             })
             remaining = deadline - time.monotonic()
@@ -344,6 +347,7 @@ class WorkflowEngineClient:
             exchanges.append(NegotiationExchange(received, reply))
             self._emit(EventType.NEGOTIATION_RESOLVED, {
                 "agent": request.agent_name, "exchange": exchange_number + 1,
+                "task_id": request.task_id,
                 "reply": reply,
             })
             current_content = reply.content
@@ -356,13 +360,13 @@ class WorkflowEngineClient:
 
     async def _finish_remote_result(
         self,
-        agent_name: str,
+        request: TaskRequest,
         result: SendMessageResult,
         interaction: dict[str, Any],
     ) -> SendMessageResult:
         interaction["terminal"] = result.is_terminal
         if result.task is not None and not result.is_terminal:
-            await self._cancel_abandoned_interaction(agent_name, interaction)
+            await self._cancel_abandoned_interaction(request.agent_name, interaction)
             if result.failure_code is None:
                 result.failure_code = "a2a.unsupported_task_state"
                 result.failure_message = (
@@ -370,7 +374,8 @@ class WorkflowEngineClient:
                     f"{result.task_state or 'unknown'}"
                 )
         self._emit(EventType.AGENT_RESPONSE, {
-            "agent": agent_name,
+            "agent": request.agent_name,
+            "task_id": request.task_id,
             "response": result.text,
             "received_messages": result.received_messages,
         })
@@ -431,7 +436,9 @@ class WorkflowEngineClient:
         consumed is a recovery candidate, because a transport may surface a
         dropped connection as any exception class at all.
         """
-        self._emit(EventType.AGENT_REQUEST, {"agent": request.agent_name, "content": content})
+        self._emit(EventType.AGENT_REQUEST, {
+            "agent": request.agent_name, "task_id": request.task_id, "content": content,
+        })
         self._transport.validate_content_extensions(card, content)
         client = self._transport.client_for(request.agent_name)
         send_request = self._transport.build_send_request(content, context_id, remote_task_id)
@@ -443,7 +450,7 @@ class WorkflowEngineClient:
             revealed = data.get("task_id")
             if revealed:
                 interaction["remote_task_id"] = revealed
-            self._forward_intermediate_event(event_type, data)
+            self._forward_intermediate_event(event_type, {**data, "logical_task_id": request.task_id})
 
         try:
             return await asyncio.wait_for(

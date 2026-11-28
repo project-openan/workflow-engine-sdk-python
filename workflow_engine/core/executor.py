@@ -256,6 +256,10 @@ class WorkflowExecutor:
             if not isinstance(result, TaskResult):
                 raise TypeError("on_self_task must return TaskResult")
         except asyncio.CancelledError:
+            # A started task that is cancelled still owes its terminal events, so that no task
+            # is ever left without an end. It produced no result, so it takes no place in the
+            # run's.
+            self._report_cancelled(step, task, index, request)
             raise
         except Exception as exc:
             result = failure_to_task_result(exc)
@@ -273,19 +277,36 @@ class WorkflowExecutor:
             error_code=result.error_code,
             error_details=result.error_details,
         )
-        history = {
+        history = self._task_history(step, index, task, request, result)
+        self.execution_history.append(history)
+        self._emit_event(EventType.TASK_STATUS_CHANGED, self._task_status(step, index, task, request))
+        self._emit_event(EventType.TASK_RESPONSE, history)
+        return task.description, index, execution_result
+
+    def _report_cancelled(self, step: WorkflowStep, task: Task, index: int, request) -> None:
+        """End a started task that was cancelled, with the engine's cancellation failure."""
+        task.status = TaskStatus.CANCELLED
+        self._emit_event(EventType.TASK_STATUS_CHANGED, self._task_status(step, index, task, request))
+        self._emit_event(
+            EventType.TASK_RESPONSE,
+            self._task_history(step, index, task, request, failure_to_task_result(asyncio.CancelledError())),
+        )
+
+    @staticmethod
+    def _task_status(step: WorkflowStep, index: int, task: Task, request) -> dict:
+        return {
+            "step": step.name, "subtask_index": index,
+            "agent": task.agent, "status": task.status.value, "task_id": request.task_id,
+        }
+
+    @staticmethod
+    def _task_history(step: WorkflowStep, index: int, task: Task, request, result: TaskResult) -> dict:
+        return {
             "step": step.name, "subtask_index": index, "task": task.description,
             "agent": task.agent, "status": task.status.value, "task_id": request.task_id,
             "outputs": result.outputs, "error": result.error or "",
             "error_code": result.error_code or "", "error_details": result.error_details,
         }
-        self.execution_history.append(history)
-        self._emit_event(EventType.TASK_STATUS_CHANGED, {
-            "step": step.name, "subtask_index": index,
-            "agent": task.agent, "status": task.status.value,
-        })
-        self._emit_event(EventType.TASK_RESPONSE, history)
-        return task.description, index, execution_result
 
     @staticmethod
     def _protocol_result(result: SendMessageResult) -> TaskResult:

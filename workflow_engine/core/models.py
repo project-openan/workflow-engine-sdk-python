@@ -60,6 +60,8 @@ class TaskStatus(Enum):
     RUNNING = "running"
     SUCCESS = "success"
     FAILED = "failed"
+    #: The task was started and then cancelled before it produced a result.
+    CANCELLED = "cancelled"
 
 
 @dataclass(frozen=True)
@@ -264,6 +266,12 @@ class Workflow:
     name: str = ""
     description: str = ""
     steps: list[WorkflowStep] = field(default_factory=list)
+    revision: str | None = None
+    # Both fields below are handed out by the center with the PSOP: the immutable revision the
+    # workflow was published under, and the identity this account may report executions as.
+    reporting_source: str | None = None
+    # The registered host this PSOP declares as its executor, when it names one.
+    workflow_host: str | None = None
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> "Workflow":
@@ -305,10 +313,40 @@ class Workflow:
                 context_from=context_from,
                 step_type=StepType.from_value(raw_step.get("step_type", raw_step.get("type"))),
             ))
+        host = data.get("workflow_host")
+        if host is not None and not isinstance(host, str):
+            raise ValueError("workflow_host must be a string")
         return cls(
             id=data.get("id", ""), name=data.get("name", ""),
-            description=data.get("description", ""), steps=steps,
+            description=data.get("description", ""), steps=steps, revision=data.get("revision"),
+            reporting_source=data.get("execution_reporting_source"),
+            workflow_host=host,
         )
+
+    def declared_host(self) -> str | None:
+        """The host this PSOP declares as its executor, or ``None`` when it declares none.
+
+        A definition names its host directly with ``workflow_host``. Older ones only name the
+        agent that runs their local (``SelfLoop``) tasks, which the center reads as the host.
+        Both are honoured, so a host that selects a PSOP for itself sees the same host the
+        center would dispatch to. A definition that names more than one host is refused, as it
+        is by the center.
+
+        Raises:
+            ValueError: if the definition names more than one host.
+        """
+        names = [
+            task.agent.strip()
+            for step in self.steps if step.step_type == StepType.SELF_LOOP
+            for task in step.subtasks if task.agent and task.agent.strip()
+        ]
+        if self.workflow_host and self.workflow_host.strip():
+            names.append(self.workflow_host.strip())
+        hosts = list(dict.fromkeys(names))
+        if len(hosts) > 1:
+            raise ValueError("workflow_host and SelfLoop tasks must identify one host, not "
+                             f"{hosts}")
+        return hosts[0] if hosts else None
 
     @classmethod
     def from_json(cls, json_str: str) -> "Workflow":

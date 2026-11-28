@@ -98,6 +98,7 @@ async def load_psop(
     connect_timeout_seconds: float = 30.0,
     read_timeout_seconds: float = 30.0,
     auth_provider: HttpAuthProvider | None = None,
+    revision: str | None = None,
 ) -> "Workflow":
     """Fetch a PSOP from the orchestration center external API.
 
@@ -112,6 +113,8 @@ async def load_psop(
     if not psop_id or psop_id in {".", ".."}:
         raise ValueError("psop_id must identify a workflow")
     url = f"{service_base_url(base_url)}/api/v1/orchestrate/psop/{quote(psop_id, safe='')}"
+    if revision is not None:
+        url += f"?revision={quote(revision, safe='')}"
     logger.info(f"[Registry] Loading PSOP from {url} (ssl_verify={ssl_verify})")
     async with httpx.AsyncClient(
         verify=_tls_options(
@@ -152,10 +155,14 @@ async def search_psop(
     crl_path: str | None = None,
     *,
     connect_timeout_seconds: float = 30.0,
-    read_timeout_seconds: float = 30.0,
+    read_timeout_seconds: float = 120.0,
     auth_provider: HttpAuthProvider | None = None,
 ) -> list["WorkflowSearchResult"]:
     """Search for matching PSOP workflows from the orchestration center.
+
+    The read deadline is longer than a load's: the center ranks its catalog with a language
+    model, so one search routinely takes tens of seconds and a storage-shaped deadline would
+    abort it.
 
     Uses the public external endpoint POST /api/v1/orchestrate/search.
     Returns a list of WorkflowSearchResult summary objects. To get the full

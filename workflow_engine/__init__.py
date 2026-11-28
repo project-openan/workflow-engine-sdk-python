@@ -73,8 +73,11 @@ from workflow_engine.control import (
 )
 from workflow_engine.registry import RegistryClient, load_psop, search_psop, BearerAuth, HttpAuthProvider, OrchestrationAccountAuth
 from workflow_engine.runner import execute_psop
+from workflow_engine.observation import CenterExecutionReporting, ExecutionReporter
 
 __all__ = [
+    "CenterExecutionReporting",
+    "ExecutionReporter",
     # Core
     "Workflow", "WorkflowStep", "Task", "JumpCondition",
     "StepType", "TaskStatus", "ExecutionResult",

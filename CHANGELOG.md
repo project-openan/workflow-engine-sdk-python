@@ -5,6 +5,112 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- `examples/psop_reporting_demo.py`: a runnable counterpart to the Java SpringSpnDemo. It searches the
+  orchestration center for the workflow a business intent describes, reads ten ranked candidates and
+  prefers one whose declaration names this host over one that declares no host, starts two small A2A
+  agents on loopback so the workflow has somewhere to dispatch, executes the retrieved PSOP with
+  `execute_psop(..., reporter=...)`, and reports each step and task through `CenterExecutionReporting`
+  while printing the run. Its durable queue defaults beside the script (`./.demo-spool`, git-ignored)
+  rather than in the user profile; configuration comes from `./.env` (`ORCH_URL`, `ORCH_USERNAME`,
+  `ORCH_PASSWORD`, `ORCH_VERIFY_SERVER`) or the environment, and the exit code is 0 only when the
+  center acknowledged the whole run. The A2A HTTP server stack is imported only when an agent starts,
+  so retrieval and selection work without it.
+- `samples/`: the scenario test suite for the SPN cross-city complaint, the Python counterpart of the
+  Java module of the same name. It covers retrieval (the center's ranking plus each candidate's
+  declared host), the selection rule (a host declaration beats a workflow that declares none), and one
+  whole run: two diagnostic steps in parallel, a merge after both, and every step and task reported to
+  the center and acknowledged. It needs no deployed service: `samples/stub_center.py` answers the four
+  endpoints the SDK uses over the standard library, and the tests start their own stub agents on
+  loopback ports. A live-center variant runs when `OPENAN_TEST_DEMO_CENTER_URL` and its account are set.
+- `workflow_engine.observation.CenterExecutionReporting`: the entry a host uses when it already
+  reaches the orchestration center, mirroring the Java SDK's class of the same name. Build it once
+  from the center address and the credential that reaches it — an `OrchestrationAccountAuth`
+  session, a bearer token (`BearerAuth` or a plain string), or any other `HttpAuthProvider` — then
+  ask it for `for_psop(workflow)` and pass that to `execute_psop(..., reporter=...)`. The center
+  names the reporting identity in the PSOP response (`execution_reporting_source`, exposed as
+  `Workflow.reporting_source`), so nothing beyond the address and the credential has to be
+  configured: the durable queue defaults to `~/.openan/execution-events` (`OPENAN_EXECUTION_SPOOL`
+  relocates it), and a host process that runs alongside another one for the same account takes its
+  own queue with `OPENAN_EXECUTION_INSTANCE`, a name that survives its restarts. One reporter serves
+  every run of the session, so a host running many workflows keeps one durable queue and one pair of
+  threads; `is_enabled()`, `active_reporter()` and `close()` are available like their Java
+  counterparts.
+- The address and the credential are one center connection. An account session is refused
+  (`ValueError`) for a center other than the one it belongs to, a token the account already holds is
+  lent for its own center or not at all (`OrchestrationAccountAuth.cached_token(url)`), and any
+  other provider is asked for the headers it would send to the reporting endpoint and has them
+  forwarded as supplied, so a host reports through whatever scheme it already uses.
+  `OrchestrationAccountAuth.check_scope(url)`, `bearer_headers(token)` and `validated_headers(...)`
+  are the public forms of those checks.
+- `Workflow.workflow_host` and `Workflow.declared_host()`: the host a loaded PSOP declares as its executor. The
+  declaration is `workflow_host`, or for older definitions the single agent named by their `SelfLoop` tasks, which
+  the center reads as the host; a definition that names two hosts is refused, as it is by the center. A host that
+  selects PSOPs by intent uses it to run only what it is declared to execute.
+- `BearerAuth.token`: the Bearer value the provider supplies right now.
+- `execute_psop(reporter=...)` is documented: without it the run is not reported, and the center
+  keeps no record of it.
+- `workflow_engine.observation.ExecutionReporter`: the low-level entry, for a host that reports
+  under an independently issued host credential. It reports a workflow run to the orchestration
+  center as ordered CloudEvents, with a durable per-host spool, idempotent replay, declared gaps and
+  per-execution delivery tracking (`await_delivery`).
+- `workflow_engine.observation_content.ContentCapture`: the policy for what task content to
+  report, and the code that keeps one event inside the center's size limit. A reporting session
+  uses `ContentCapture.summaries()`: each task's readable answer in `result.summary`,
+  and no structured outputs, because the center's contract requires the application to name the
+  keys it will share. A host opts in with `ContentCapture(content_chars, output_keys)` or
+  `ContentCapture.all()`; a reporter built directly stays status-only unless it is given a
+  `capture=` or the `content_chars`/`output_keys` shorthands. It mirrors the Java SDK's
+  `ContentCapture`.
+- `workflow_engine.client.sensitive_data.sensitive_key()`: tells a standard credential field name
+  from an ordinary one, so structured outputs never carry `token`, `password`, `secret` or
+  `api_key`, even when a policy names them.
+
+### Changed
+
+- Building an event's content is writer work, never execution work: walking outputs, redacting
+  values, joining answers and truncating summaries now run on the writer thread, so a large
+  output costs the workflow nothing. A test records which thread walks the outputs and fails if
+  the execution ever does it again.
+- `redact()` scans for a credential keyword first. The rules try to match at every position,
+  which cost six seconds on a 30 KB value that held no credential at all; the scan makes that
+  case microseconds without changing what gets masked.
+- Reporting can never decide whether a run happens or what a host sees: a failure to start
+  reporting leaves the run unreported, a failure capturing one event loses only that report (the
+  event still reaches the caller), and a failure reporting the outcome cannot withhold the result.
+  A test substitutes a failing reporter and asserts the run's events are identical without it.
+- `search_psop` defaults to a 120-second read deadline, while `load_psop` keeps 30 seconds. The
+  center ranks its whole catalog with a language model, so one search takes tens of seconds:
+  measured against a 20-PSOP catalog, searches took 19-47 seconds and a third of them ran past the
+  storage-shaped deadline, which would abort retrieval intermittently.
+- Every task that starts is reported as ended exactly once, with success, failure or
+  cancellation. A task cancelled while it was working, as `AnySuccess` does to the tasks
+  that did not win, used to report no end at all, which left a consumer with a task that
+  never finished. `task_response` and `task_status_changed` now report the new
+  `TaskStatus.CANCELLED`, and a cancelled task takes no place in the run's history because
+  it produced no result. Execution reporting maps it to the outcome `cancelled`.
+- Streaming agent answers (`agent_status_update`, `agent_artifact_update`,
+  `agent_message_event`) are reported as progress with a summary. When the event carries no
+  logical task id it is attributed by the agent that answered only while that agent has
+  exactly one task in flight; with two, it could be either's, and it is dropped rather than
+  guessed.
+- A conflict no retry can resolve (`SEQUENCE_OR_EVENT_ID_CONFLICT`, `EXECUTION_CLOSED`,
+  `OWNER_MISMATCH`, ...) sets the run aside as rejected once instead of being retried forever.
+- Reporting is observable from the host log: whether it is enabled and why not, each confirmed
+  execution, and every refused batch with the center's status and reason code.
+- A failed account renewal no longer stops the reporting thread.
+
+### Fixed
+
+- Cancelling the task that consumes `execute_psop` now cancels the run with it. Only closing
+  the iterator did that before, so a consumer that was cancelled left the workflow running to
+  completion in the background, reporting no end for any of its tasks.
+- The execution only produces events and isolates the reporter: whether a run is degraded is
+  the reporter's own state, which `execute_psop` no longer writes.
+
 ## [0.1.1]
 
 ### Upgrade notes

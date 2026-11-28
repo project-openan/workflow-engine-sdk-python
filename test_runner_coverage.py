@@ -229,7 +229,10 @@ async def test_execute_psop_success_emits_lifecycle_events():
         "task_response", "step_complete", "workflow_complete", "complete",
         "close",
     ]
-    assert events[0]["data"] == {"workflow": "w", "steps": 1}
+    start = events[0]["data"]
+    assert {key: start[key] for key in ("workflow", "steps")} == {"workflow": "w", "steps": 1}
+    # The run names itself, so a host can correlate the events it reports.
+    assert start["execution_id"]
     complete = next(e for e in events if e["type"] == "complete")
     assert complete["data"]["step_outputs"]["s"] == {"do": ["OK from a"]}
     assert complete["data"]["history"][0]["step"] == "s"
@@ -253,7 +256,12 @@ async def test_execute_psop_accepts_dict_psop_via_from_dict():
     events = await _drain(execute_psop(
         psop_dict, [], _EchoControl(), engine_client=StubWorkflowEngineClient(),
     ))
-    assert events[0]["data"] == {"workflow": "fromdict", "steps": 1}
+    start = events[0]["data"]
+    assert {key: start[key] for key in ("workflow", "steps")} == {
+        "workflow": "fromdict",
+        "steps": 1,
+    }
+    assert start["execution_id"]
     assert "complete" in [e["type"] for e in events]
 
 
@@ -446,9 +454,9 @@ async def test_early_disconnect_cancels_before_run_starts_and_closes_cleanly():
     """TC-RUN-014 | disconnecting before the workflow starts cleans up cleanly.
     输入: a hanging on_task; the consumer drains "start" and immediately closes
           the iterator (no yield -> runner task never starts)
-    预期输出: the iterator closes without hanging and on_finish is never called
-             (the workflow never ran/finalized)
-    断言点: only "start" was seen; on_finish flag is False; aclose completes
+    预期输出: the iterator closes without hanging and on_finish is called once with the cancelled result
+             (a run that started is always finished)
+    断言点: only "start" was seen; on_finish ran once; aclose completes
             within the timeout
     防回归: if the GeneratorExit cancel/await-run_task path were broken, aclose
             would hang (timeout) or leave the runner task dangling
@@ -471,7 +479,7 @@ async def test_early_disconnect_cancels_before_run_starts_and_closes_cleanly():
 
     assert seen == ["start"]
     assert control.tasks == 0
-    assert on_finish_called["v"] is False
+    assert on_finish_called["v"] is True
 
 
 # ===========================================================================

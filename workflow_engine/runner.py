@@ -37,6 +37,7 @@ from loguru import logger
 
 from workflow_engine.client.a2a_transport import A2ATransport
 from workflow_engine.client.engine_client import WorkflowEngineClient
+from workflow_engine.client.sensitive_data import redact
 from workflow_engine.control.control_points import ControlPoint, EventCallback
 from workflow_engine.core.executor import WorkflowExecutor
 from workflow_engine.core.models import ExecutionResult, Workflow
@@ -78,8 +79,14 @@ class _EventEmitter(EventCallback):
     def __init__(self):
         self._queue: "asyncio.Queue[Optional[dict]]" = asyncio.Queue()
         self._collected: list = []
+        self.observation = None
 
     def on_event(self, event_type: str, data: dict):
+        if self.observation is not None:
+            try:
+                self.observation.observe(event_type, data)
+            except Exception:  # noqa: BLE001 -- reporting never decides what the host sees
+                logger.warning("Workflow observation could not capture an event")
         event = {"type": event_type, "data": _serialize(data), "timestamp": time.time()}
         self._queue.put_nowait(event)
         self._collected.append(event)
@@ -126,6 +133,10 @@ async def execute_psop(
     max_negotiation_exchanges: int = 3,
     on_finish: Optional[Callable[[ExecutionResult, list], Awaitable[None]]] = None,
     on_event: Optional[Callable[[dict], Any]] = None,
+    reporter=None,
+    business_ref: str | None = None,
+    traceparent: str | None = None,
+    tracestate: str | None = None,
 ) -> AsyncIterator[dict]:
     """Execute a PSOP end-to-end, yielding serialized event dicts.
 
@@ -145,6 +156,10 @@ async def execute_psop(
       return the event unchanged, a different event, a list of events
       (to inject business-specific events like ``psop_update``), or
       None (to skip).
+    - ``reporter``: optional :class:`CenterExecutionReporting` reporter. Without it the run is
+      not reported to the orchestration center, and the center keeps no record of it. A host that
+      already reaches the center with an account session or a bearer token builds one with
+      ``CenterExecutionReporting(base_url, auth)`` and passes ``reporter=reporting.for_psop(workflow)``.
 
     Yields (in order): ``start`` then the executor/engine events
     (``step_start``, ``agent_request``, ``agent_response``,
@@ -188,20 +203,33 @@ async def execute_psop(
         lang=lang,
     )
 
-    emitter.emit("start", {"workflow": workflow.name, "steps": len(workflow.steps)})
-
-    holder: dict = {}
-
-    async def _run_and_finalize():
+    if reporter is not None:
         try:
-            holder["result"] = await executor.run()
-        except asyncio.CancelledError:
-            holder["error"] = "Workflow cancelled (client disconnected)"
-        except Exception as e:
-            from workflow_engine.client.sensitive_data import redact
+            emitter.observation = reporter.begin(
+                workflow, executor.execution_id, business_ref=business_ref,
+                traceparent=traceparent, tracestate=tracestate,
+            )
+        except Exception:  # noqa: BLE001 -- reporting never decides whether the run happens
+            logger.warning("Execution reporting could not start; the run continues unreported")
+    emitter.emit("start", {
+        "workflow": workflow.name, "steps": len(workflow.steps),
+        "execution_id": executor.execution_id,
+    })
 
-            logger.error(f"[execute_psop] Execution failed: {redact(str(e))}")
-            holder["error"] = redact(str(e))
+    finishing_hook = False
+
+    async def _finalize_execution(execution: asyncio.Task[ExecutionResult]):
+        nonlocal finishing_hook
+        cancelled = False
+        try:
+            result = await execution
+        except asyncio.CancelledError:
+            cancelled = True
+            result = ExecutionResult(success=False, error="Workflow cancelled (client disconnected)")
+        except Exception as e:
+            error = redact(str(e))
+            logger.error(f"[execute_psop] Execution failed: {error}")
+            result = ExecutionResult(success=False, error=error)
         finally:
             if owns_client:
                 try:
@@ -209,35 +237,42 @@ async def execute_psop(
                 except Exception:
                     pass
 
-        result: ExecutionResult = holder.get("result") or ExecutionResult(
-            success=False, error=holder.get("error") or "Unknown error"
-        )
-        if result.success and "error" not in holder:
+        if result.success:
             emitter.emit("complete", {
                 "history": result.history,
                 "step_outputs": result.step_outputs,
             })
         else:
             emitter.emit("error", {
-                "error": holder.get("error") or result.error or "Execution failed",
+                "error": result.error or "Execution failed",
                 "history": result.history,
                 "step_outputs": result.step_outputs,
             })
 
-        if on_finish:
+        if emitter.observation is not None:
             try:
+                emitter.observation.finish(
+                    "cancelled" if cancelled
+                    else "succeeded" if result.success else "failed"
+                )
+            except Exception:  # noqa: BLE001 -- the result still reaches the caller
+                logger.warning("Execution observation could not report its outcome")
+        finishing_hook = True
+        try:
+            if on_finish:
                 ret = on_finish(result, emitter.collected)
                 if hasattr(ret, "__await__"):
                     await ret
-            except Exception as e:
-                from workflow_engine.client.sensitive_data import redact
+        except Exception as e:
+            logger.error(f"[execute_psop] on_finish failed: {redact(str(e))}")
+        finally:
+            emitter.emit("close", {})
+            emitter.finish()
 
-                logger.error(f"[execute_psop] on_finish failed: {redact(str(e))}")
-
-        emitter.emit("close", {})
-        emitter.finish()
-
-    run_task = asyncio.create_task(_run_and_finalize())
+    # Observe the execution independently so cleanup runs even if cancellation prevents its
+    # coroutine from starting. The optional completion hook can still be interrupted on close.
+    run_task = asyncio.create_task(executor.run())
+    finalizer = asyncio.create_task(_finalize_execution(run_task))
 
     try:
         async for event in emitter.drain():
@@ -258,17 +293,13 @@ async def execute_psop(
                     yield e
             else:
                 yield transformed
-    except GeneratorExit:
+    finally:
+        # However the consumer stops -- closing the iterator, being cancelled, or failing inside
+        # on_event -- the run stops with it, after every task it started has reported its end.
         run_task.cancel()
+        if finishing_hook and not finalizer.done():
+            finalizer.cancel()
         try:
-            await run_task
-        except (asyncio.CancelledError, Exception):
-            pass
-        return
-
-    if not run_task.done():
-        run_task.cancel()
-        try:
-            await run_task
+            await asyncio.shield(finalizer)
         except (asyncio.CancelledError, Exception):
             pass

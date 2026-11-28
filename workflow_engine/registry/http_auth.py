@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import re
+import threading
 import time
 from collections.abc import Callable, Mapping
 from typing import Protocol
@@ -46,7 +47,8 @@ _RESERVED = {
 }
 
 
-def _bearer(token: str) -> dict[str, str]:
+def bearer_headers(token: str) -> dict[str, str]:
+    """The one header a Bearer token travels in; the token must be well-formed."""
     if not isinstance(token, str) or not _BEARER.fullmatch(token):
         raise ValueError("Bearer token is missing or malformed")
     return {"Authorization": f"Bearer {token}"}
@@ -61,14 +63,20 @@ class BearerAuth(HttpAuthProvider):
 
     def __init__(self, token: str | Callable[[], str]) -> None:
         if not callable(token):
-            _bearer(token)
+            bearer_headers(token)
         self._token = token
 
+    @property
+    def token(self) -> str:
+        """The Bearer value this provider supplies right now."""
+        return self._token() if callable(self._token) else self._token
+
     async def headers(self, url: str, client: httpx.AsyncClient) -> dict[str, str]:
-        return _bearer(self._token() if callable(self._token) else self._token)
+        return bearer_headers(self.token)
 
 
-def _validated_headers(supplied: Mapping[str, str]) -> dict[str, str]:
+def validated_headers(supplied: Mapping[str, str]) -> dict[str, str]:
+    """A provider's headers, checked the way every management request checks them."""
     if not isinstance(supplied, Mapping):
         raise TypeError("Authentication headers must be a mapping")
     result = {}
@@ -136,7 +144,9 @@ class OrchestrationAccountAuth:
 
     def __init__(self, base_url: str, username: str, password: str) -> None:
         self._base_url = service_base_url(base_url)
-        self._api_path = unquote(urlsplit(self._base_url).path) + "/api/v1/orchestrate/"
+        prefix = unquote(urlsplit(self._base_url).path)
+        self._api_path = prefix + "/api/v1/orchestrate/"
+        self._events_path = prefix + "/api/v1/execution-events"
         if (
             not isinstance(username, str)
             or not username.strip()
@@ -149,18 +159,55 @@ class OrchestrationAccountAuth:
         self._token: str | None = None
         self._expires_at = 0.0
         self._lock = asyncio.Lock()
+        # Guards the cached token from threads that have no event loop (the reporting sender).
+        self._cache_lock = threading.Lock()
 
-    def _check_scope(self, url: str) -> None:
+    def cached_token(self, url: str, *, invalidate: str | None = None) -> str | None:
+        """Lend the current account token for a request to ``url``, from a thread that
+        cannot await :meth:`headers`.
+
+        The target is checked first, exactly as it is for every other use of the account: a
+        token this center issued never travels to another address, whichever path hands it
+        over. Returns ``None`` when no valid token is held, which is also what a caller gets
+        after naming a token the center refused. Renewal stays with :meth:`headers` on the
+        event loop, so the login and its rate-limit budget are spent in exactly one place.
+        """
+        self.check_scope(url)
+        with self._cache_lock:
+            if invalidate is not None and invalidate == self._token:
+                self._token = None
+                self._expires_at = 0.0
+            if self._token is None or time.monotonic() >= self._expires_at:
+                return None
+            return self._token
+
+    @property
+    def base_url(self) -> str:
+        """The validated center address this account is scoped to."""
+        return self._base_url
+
+    def check_scope(self, url: str) -> None:
+        """Raise ``ValueError`` unless these credentials may be sent to ``url``.
+
+        The account covers this center's orchestration API and its execution reporting, and
+        nothing else. Call it before handing the credential to anything that names its own
+        target, so a mismatched address fails before a request is ever built.
+        """
         parsed = urlsplit(url)
         path = unquote(parsed.path)
+        # The account covers the orchestration API and, like the Java SDK, execution reporting:
+        # both are the same center and the same login. Nothing else may carry these credentials.
+        within_scope = path.startswith(self._api_path) or path == self._events_path
+        pinned_psop = (re.fullmatch(re.escape(self._api_path) + r"psop/[^/]+", path)
+                       and re.fullmatch(r"revision=[0-9a-f]{64}", parsed.query))
         if (
             _origin(url) != _origin(self._base_url)
             or parsed.username is not None
             or parsed.password is not None
-            or parsed.query
+            or (parsed.query and not pinned_psop)
             or parsed.fragment
             or "\\" in path
-            or not path.startswith(self._api_path)
+            or not within_scope
             or any(part in {".", ".."} for part in path.split("/"))
             or any(ord(c) <= 32 for c in url)
         ):
@@ -169,7 +216,7 @@ class OrchestrationAccountAuth:
             )
 
     async def headers(self, url: str, client: httpx.AsyncClient) -> dict[str, str]:
-        self._check_scope(url)
+        self.check_scope(url)
         async with self._lock:
             if self._token is None or time.monotonic() >= self._expires_at:
                 self._token = None
@@ -193,7 +240,7 @@ class OrchestrationAccountAuth:
                     token = payload.get("access_token")
                     ttl = payload["expires_in"]
                     token_type = payload.get("token_type")
-                    _bearer(token)
+                    bearer_headers(token)
                     if (
                         not isinstance(token_type, str)
                         or token_type.lower() != "bearer"
@@ -209,16 +256,19 @@ class OrchestrationAccountAuth:
                     raise RuntimeError(
                         "Orchestration account login failed; check credentials, TLS and /api/v1/auth/token"
                     ) from None
-                self._token = token
-                self._expires_at = started + ttl - min(30.0, ttl * 0.1)
+                with self._cache_lock:
+                    self._token = token
+                    self._expires_at = started + ttl - min(30.0, ttl * 0.1)
                 logger.debug("[ManagementAuth] Orchestration account token acquired")
-            return {"Authorization": f"Bearer {self._token}"}
+            with self._cache_lock:
+                return {"Authorization": f"Bearer {self._token}"}
 
     def invalidate(self, url: str, rejected_headers: dict[str, str]) -> bool:
-        self._check_scope(url)
-        if rejected_headers.get("Authorization") == f"Bearer {self._token}":
-            self._token = None
-            self._expires_at = 0.0
+        self.check_scope(url)
+        with self._cache_lock:
+            if rejected_headers.get("Authorization") == f"Bearer {self._token}":
+                self._token = None
+                self._expires_at = 0.0
         return True
 
 
@@ -241,8 +291,8 @@ async def authenticated_request(
             except Exception:  # noqa: BLE001 -- provider exceptions can contain credentials
                 raise RuntimeError("HTTP authentication provider failed") from None
         else:
-            supplied = _bearer(access_token) if access_token is not None else {}
-        headers = _validated_headers(supplied)
+            supplied = bearer_headers(access_token) if access_token is not None else {}
+        headers = validated_headers(supplied)
         # Keep get/post entry points so instrumented clients can observe requests.
         response = await getattr(client, method.lower())(
             url, headers=headers, follow_redirects=False, **kwargs

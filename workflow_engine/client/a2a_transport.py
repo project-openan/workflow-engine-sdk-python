@@ -507,12 +507,14 @@ class A2ATransport:
                             "TASK_STATE_COMPLETED", "TASK_STATE_FAILED",
                             "TASK_STATE_CANCELED", "TASK_STATE_REJECTED",
                         ),
+                        "text": self._extract_message_text(update.status.message, None) or "",
                         "metadata": self._struct_dict(update.metadata),
                     })
 
             elif has_artifact:
                 update = response.artifact_update
                 artifact = self._received_artifact(update.artifact)
+                chunk_text = self._text_from_artifacts({artifact.artifact_id: artifact})
                 previous = task_artifacts.get(artifact.artifact_id)
                 if getattr(update, "append", False) and previous is not None:
                     artifact = ReceivedArtifact(
@@ -531,6 +533,7 @@ class A2ATransport:
                         "artifact_name": artifact.name,
                         "append": getattr(update, "append", False),
                         "last_chunk": getattr(update, "last_chunk", False),
+                        "text": chunk_text or "",
                         "metadata": dict(artifact.metadata),
                     })
 

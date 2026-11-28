@@ -38,6 +38,11 @@ dev = [
     "pytest>=8.0.0",
     "pytest-asyncio>=0.23.0",
 ]
+# The embedded-agent demo and the scenario run test start A2A HTTP servers.
+samples = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+]
 
 [project.urls]
 Homepage = "https://github.com/project-openan/workflow-engine-sdk-python"

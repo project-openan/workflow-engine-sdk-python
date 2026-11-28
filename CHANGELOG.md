@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.2] - 2026-11-28
+
 ### Added
 
 - `examples/psop_reporting_demo.py`: a runnable counterpart to the Java SpringSpnDemo. It searches the
@@ -102,6 +104,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Reporting is observable from the host log: whether it is enabled and why not, each confirmed
   execution, and every refused batch with the center's status and reason code.
 - A failed account renewal no longer stops the reporting thread.
+- The source distribution ships only `workflow_engine`. `examples/` and `samples/` are
+  auxiliary test material and are no longer packaged.
 
 ### Fixed
 
@@ -110,6 +114,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   completion in the background, reporting no end for any of its tasks.
 - The execution only produces events and isolates the reporter: whether a run is degraded is
   the reporter's own state, which `execute_psop` no longer writes.
+- The reporter's send loop now catches every exception a host token callable or a malformed
+  spooled event can raise. It caught four types only, so anything else ended the sender thread
+  and every later run stayed spooled and unsent.
 
 ## [0.1.1]
 

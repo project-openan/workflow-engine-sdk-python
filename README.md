@@ -155,8 +155,8 @@ Bearer Token；OAuth2 的申请、刷新由业务已有认证库完成，也可�
 后重试一次。注册中心操作不自动重放。认证头不允许重复名称、换行或覆盖 Host 等传输头。
 中心地址支持部署路径前缀，账号令牌仍限定在该前缀下的公开编排 API。
 
-源码版本现为 `0.1.1`，包含已发布 `0.1.0` 之后的主干修复。发布前可运行
-`python -m build` 后安装 `dist/workflow_exec_engine-0.1.1-py3-none-any.whl`；
+源码版本现为 `0.1.2`，包含已发布 `0.1.1` 之后的主干变更。发布前可运行
+`python -m build` 后安装 `dist/workflow_exec_engine-0.1.2-py3-none-any.whl`；
 此说明不代表该版本已发布到 PyPI。
 
 ## 文档与验证

@@ -1,4 +1,8 @@
 include README.md
 include README_en.md
 include requirements.txt
-recursive-include examples *.py
+
+# examples/ and samples/ are auxiliary test material, not part of the SDK
+# distribution. Keep them out of the sdist as well as the wheel.
+prune examples
+prune samples

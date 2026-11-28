@@ -20,3 +20,14 @@ def test_release_reads_the_dynamic_package_version():
     from workflow_engine import __version__
 
     assert result.stdout.strip() == __version__
+
+
+def test_sdist_ships_only_the_package():
+    """examples/ and samples/ are test material and must stay out of the sdist."""
+    root = Path(__file__).parent
+    manifest = (root / "MANIFEST.in").read_text(encoding="utf-8")
+    assert "recursive-include examples" not in manifest
+    assert "prune examples" in manifest
+    assert "prune samples" in manifest
+    pyproject = (root / "pyproject.toml").read_text(encoding="utf-8")
+    assert 'include = ["workflow_engine*"]' in pyproject

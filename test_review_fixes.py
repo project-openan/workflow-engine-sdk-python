@@ -772,7 +772,7 @@ def test_distribution_version_has_a_single_source():
     )
 
     import workflow_engine
-    assert workflow_engine.__version__ == "0.1.1"
+    assert workflow_engine.__version__ == "0.1.2"
 
 
 def test_declared_a2a_t_sdk_lower_bound_matches_the_verifier():

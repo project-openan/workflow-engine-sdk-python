@@ -522,6 +522,14 @@ class ExecutionReporter:
                         except (OSError, ValueError, TypeError):
                             delay = 1
                             logger.warning("Execution observation batch is temporarily unavailable")
+                        except Exception as error:  # noqa: BLE001 -- keep the sender alive
+                            # Anything a host's credential or a spooled event raises (KeyError from
+                            # os.environ, AttributeError from a custom provider) must cost this
+                            # batch, not the sender: it is the only thread every later run has.
+                            delay = 1
+                            logger.warning(
+                                "Execution reporting failed for {} ({}); retrying later",
+                                folder.name, type(error).__name__)
                         if delay is None:
                             failures.pop(folder, None)
                         else:

@@ -513,6 +513,39 @@ def test_a_failed_renewal_stops_the_batch_but_not_the_sender(tmp_path, monkeypat
 
     assert len(logins) >= 2, "the first renewal failed, so a later batch renewed again"
     assert reported, "the sender survived the failed renewal and delivered the run"
+
+
+def test_a_token_supplier_that_raises_costs_one_batch_not_the_sender(tmp_path, monkeypatch):
+    """A host's token callable may raise anything; the sender must outlive it and retry."""
+    attempts = []
+    received = []
+
+    def token_source():
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise KeyError("TOKEN")
+        return "synthetic-token"
+
+    def center(request):
+        events = _batch(request)
+        received.extend(events)
+        return _ack(events, events[-1]["seq"])
+
+    transport = httpx.MockTransport(center)
+    client = httpx.Client
+    monkeypatch.setattr(httpx, "Client", lambda **kw: client(transport=transport, **kw))
+    reporter = ExecutionReporter(ENDPOINT, token_source, SOURCE, tmp_path)
+    run_id = str(uuid4())
+    try:
+        _run(reporter, run_id).finish("succeeded")
+        assert reporter.await_delivery(run_id, 15), "the sender survived and delivered the run"
+    finally:
+        reporter.close()
+
+    assert len(attempts) >= 2, "the failed batch was retried"
+    assert received, "the run's events reached the center"
+
+
 def _sent_events(tmp_path, monkeypatch, capture=None):
     """A reporter whose center accepts everything, plus its run and the events it received."""
     received = []
